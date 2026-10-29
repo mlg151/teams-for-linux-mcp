@@ -1,0 +1,31 @@
+:root { font-family: system-ui, sans-serif; color: #182538; background: #f2f5f9; line-height: 1.5; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1060px; margin: 36px auto; padding: 0 24px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+h1 { font-size: 28px; letter-spacing: -.6px; margin: 2px 0 12px; line-height: 1.25; }
+h2 { margin-top: 0; }
+.eyebrow { font-size: 11px; font-weight: 750; letter-spacing: 1.6px; color: #596a83; margin: 0; }
+.badge { font-size: 12px; padding: 6px 11px; border: 1px solid #d2deee; border-radius: 20px; color: #355174; white-space: nowrap; background: #fff; }
+.intro { max-width: 760px; color: #526178; margin: 0 0 20px; font-size: 14px; }
+.connection { display: flex; flex-wrap: wrap; gap: 4px 20px; justify-content: space-between; font-size: 13px; margin-bottom: 14px; color: #355174; }
+#origin { word-break: break-all; color: #596a83; }
+#controls { border: 1px solid #d6dfeb; border-radius: 10px; padding: 18px; background: #fff; margin-bottom: 16px; }
+label { display: block; font-size: 13px; font-weight: 650; margin-bottom: 8px; }
+.input-row { display: flex; gap: 8px; }
+input { min-width: 0; width: 100%; border: 1px solid #afbed2; border-radius: 6px; padding: 11px 12px; font-size: 16px; font-family: inherit; }
+button { border: 1px solid #c3cfe0; border-radius: 6px; padding: 9px 13px; background: #fff; color: #294263; font: 600 13px system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+.input-row button { color: white; background: #2851a0; border-color: #2851a0; }
+button:disabled, input:disabled { opacity: .5; cursor: default; }
+button:hover:enabled { filter: brightness(.94); }
+button:focus-visible, input:focus-visible { outline: 3px solid #8eb6ff; outline-offset: 2px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.cancel { margin-left: auto; color: #714142; }
+.hint, footer { color: #596a73; font-size: 12px; margin: 12px 0 0; }
+#screen-container { overflow: hidden; background: #e8eef6; border: 1px solid #cbd6e5; border-radius: 10px; min-height: 80px; }
+#screen { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: manipulation; }
+#screen[hidden], [hidden] { display: none !important; }
+#error { color: #913b33; background: #fff2ed; border: 1px solid #eabeb1; border-radius: 6px; padding: 12px; font-size: 13px; }
+#done { background: #e9f5ed; border: 1px solid #b8d8c5; border-radius: 10px; padding: 26px; }
+footer { padding-bottom: 24px; }
+@media (max-width: 560px) { main { margin: 22px auto; padding: 0 14px; } h1 { font-size: 23px; } #controls { padding: 13px; } .input-row { flex-direction: column; } .cancel { margin-left: 0; } }

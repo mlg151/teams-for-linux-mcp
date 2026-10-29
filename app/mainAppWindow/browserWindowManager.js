@@ -63,7 +63,10 @@ class BrowserWindowManager {
 
     windowState.manage(this.window);
 
-    if (process.env.E2E_TESTING !== 'true') {
+    // Playwright's Electron driver evaluates in the main process to manage the
+    // headless runtime, just as it does for E2E tests. Keep the normal desktop
+    // guard; allow the explicitly selected MCP modes to use the driver.
+    if (process.env.E2E_TESTING !== 'true' && !['headless', 'login'].includes(process.env.TEAMS_MCP_MODE)) {
       this.window.eval = globalThis.eval = function () {
         throw new Error("Sorry, this app does not support window.eval().");
       };
@@ -117,6 +120,8 @@ class BrowserWindowManager {
         contextIsolation: false,  // Required for ReactHandler DOM access
         nodeIntegration: false,   // Secure: preload scripts don't need this
         sandbox: false,           // Required for system API access
+        // MCP keeps Teams alive without a visible window.
+        ...(process.env.TEAMS_MCP_MODE ? { backgroundThrottling: false } : {}),
       },
     });
   }

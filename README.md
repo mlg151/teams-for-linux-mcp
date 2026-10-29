@@ -1,4 +1,12 @@
-# Teams for Linux
+# Teams for Linux MCP
+
+Run the existing Teams app without a visible desktop window and expose its signed-in session through MCP. Tools cover sending messages, searching messages/chats/Teams/OneDrive, reading messages and files metadata, and calendars. No call-control tools are exposed.
+
+Start with the [MCP setup and login guide](app/mcp/README.md). Call `login` over MCP for a private browser link to complete sign-in and MFA. The implementation uses the existing Microsoft login session; it does not introduce a separate Entra app registration. Linux server mode uses a private Xvfb display automatically.
+
+**Status:** experimental. Protocol, service behavior, headless startup, and browser adapters have automated coverage. Live sign-in, people lookup, verified chat resolution, and message sending have been exercised with a Microsoft account. Other operations remain subject to tenant permissions and Teams UI differences.
+
+## Original Teams for Linux desktop app
 
 [![Matrix Space](https://img.shields.io/matrix/teams-for-linux-space%3Amatrix.org?server_fqdn=matrix.org&label=Matrix%20Space)](https://matrix.to/#/#teams-for-linux-space:matrix.org "Matrix Space")
 ![](https://img.shields.io/github/release/IsmaelMartinez/teams-for-linux.svg?style=flat)

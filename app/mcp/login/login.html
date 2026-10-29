@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Microsoft sign-in · Teams MCP</title>
+  <link rel="stylesheet" href="./login.css">
+  <script src="./login.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">TEAMS MCP</p><h1>Sign in to Microsoft</h1></div>
+      <span class="badge">Private session</span>
+    </header>
+    <p class="intro">You’re controlling the server’s sign-in window. Complete login and MFA here; your password and codes stay out of the MCP conversation.</p>
+    <div class="connection"><span id="status" role="status">Connecting to your sign-in session…</span><span id="origin"></span></div>
+    <p id="error" role="alert" hidden></p>
+    <section id="controls" aria-label="Sign-in controls">
+      <label for="typing">Click a field in the screen below, then type here</label>
+      <div class="input-row">
+        <input id="typing" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Type into the selected field" maxlength="4096" disabled>
+        <button type="button" data-key="Enter" disabled>Enter / Next</button>
+      </div>
+      <div class="buttons">
+        <button type="button" data-key="Tab" disabled>Next field</button>
+        <button type="button" data-key="Backspace" disabled>Backspace</button>
+        <button type="button" data-key="Control+A" disabled>Select all</button>
+        <button type="button" id="refresh">Refresh screen</button>
+        <button type="button" id="cancel" class="cancel">Close login link</button>
+      </div>
+      <p class="hint">Text is sent directly to the selected field. Microsoft masks passwords in the live screen. If MFA asks for approval on your phone, approve it there and keep this page open.</p>
+    </section>
+    <div id="screen-container"><img id="screen" alt="Live Microsoft sign-in screen. Click the field or button you want to use." hidden></div>
+    <section id="done" hidden><h2>You’re signed in.</h2><p>You can close this page and return to your MCP client. The same Teams session is ready to use.</p></section>
+    <footer>This link expires after ten minutes. For a new link, call <code>login</code> in your MCP client.</footer>
+  </main>
+</body>
+</html>

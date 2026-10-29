@@ -107,6 +107,9 @@ process.on('unhandledRejection', (reason) => {
 if (process.env.E2E_USER_DATA_DIR) {
   app.setPath("userData", process.env.E2E_USER_DATA_DIR);
 }
+if (process.env.TEAMS_MCP_USER_DATA_DIR) {
+  app.setPath("userData", path.resolve(process.env.TEAMS_MCP_USER_DATA_DIR));
+}
 
 // This must be executed before loading the config file.
 CommandLineManager.addSwitchesBeforeConfigLoad();
@@ -118,6 +121,7 @@ const appConfig = new AppConfiguration(
 );
 
 const config = appConfig.startupConfig;
+require('./mcp/config').applyMcpConfig(config, process.env.TEAMS_MCP_MODE);
 config.appPath = path.join(__dirname, app.isPackaged ? "../../" : "");
 // Runtime-only: the per-launch PiP frame name reaches the browser tool through get-config.
 config.documentPictureInPictureFrameName = PIP_FRAME_NAME;
@@ -229,7 +233,7 @@ if (isMac) {
 }
 
 const protocolClient = "msteams";
-if (!app.isDefaultProtocolClient(protocolClient, process.execPath)) {
+if (!process.env.TEAMS_MCP_MODE && !app.isDefaultProtocolClient(protocolClient, process.execPath)) {
   app.setAsDefaultProtocolClient(protocolClient, process.execPath);
 }
 
@@ -629,6 +633,7 @@ async function showConfigurationDialogs() {
 }
 
 function loadMenuToggleSettings() {
+  if (['headless', 'login'].includes(process.env.TEAMS_MCP_MODE)) return;
   const menuToggleSettings = [
     'disableNotifications',
     'disableNotificationSound',
