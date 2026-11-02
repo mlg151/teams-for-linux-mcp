@@ -39,7 +39,7 @@ function portalOptions(env = process.env) {
     }
     publicOrigin = url.origin;
   }
-  return { port, publicOrigin };
+  return { port, publicOrigin, ...(env.TEAMS_MCP_PRIVATE_NETWORK === '1' ? { listenHost: '0.0.0.0' } : {}) };
 }
 
 async function readJson(request) {
@@ -55,11 +55,12 @@ async function readJson(request) {
 }
 
 class LoginPortal {
-  constructor(runtime, { port = 0, publicOrigin, ttlMs = 10 * 60 * 1000 } = {}) {
+  constructor(runtime, { port = 0, publicOrigin, ttlMs = 10 * 60 * 1000, listenHost = '127.0.0.1' } = {}) {
     this.runtime = runtime;
     this.port = port;
     this.publicOrigin = publicOrigin;
     this.ttlMs = ttlMs;
+    this.listenHost = listenHost;
     this.token = randomBytes(32).toString('base64url');
     this.closed = false;
     this.reason = 'pending';
@@ -68,6 +69,7 @@ class LoginPortal {
 
   async start() {
     if (!this.server) {
+      if (this.listenHost !== '127.0.0.1') require('./privateNetwork').assertPrivateNetwork();
       this.server = http.createServer((request, response) => {
         this.handle(request, response).catch(() => {
           if (!response.headersSent) this.json(response, 502, { error: 'The login screen is changing or unavailable. Refresh it and try again.' });
@@ -79,7 +81,7 @@ class LoginPortal {
       this.server.keepAliveTimeout = 1000;
       await new Promise((resolve, reject) => {
         this.server.once('error', reject);
-        this.server.listen(this.port, '127.0.0.1', resolve);
+        this.server.listen(this.port, this.listenHost, resolve);
       }).catch(() => {
         this.close();
         throw new McpOperationError('login_unavailable', 'Could not open the browser login link. Check whether TEAMS_MCP_LOGIN_PORT is already in use.');
@@ -120,8 +122,10 @@ class LoginPortal {
   async handle(request, response) {
     this.headers(response);
     const allowedHosts = new Set([new URL(this.localOrigin).host, new URL(this.origin).host]);
-    if (!allowedHosts.has(request.headers.host) ||
-      (request.headers.origin && request.headers.origin !== this.origin)) {
+    const localHost = isLoopbackOrigin(`http://${request.headers.host}`);
+    const validOrigin = !request.headers.origin || request.headers.origin === this.origin ||
+      (localHost && isLoopbackOrigin(request.headers.origin));
+    if ((!allowedHosts.has(request.headers.host) && !localHost) || !validOrigin) {
       return this.json(response, 403, { error: 'Invalid request origin.' });
     }
     const url = new URL(request.url, this.localOrigin);
@@ -136,7 +140,7 @@ class LoginPortal {
       return this.json(response, 200, state);
     }
     if (request.method === 'POST') {
-      if (request.headers.origin !== this.origin) return this.json(response, 403, { error: 'Invalid request origin.' });
+      if (!request.headers.origin || !validOrigin) return this.json(response, 403, { error: 'Invalid request origin.' });
       if (url.pathname === '/api/cancel') {
         this.json(response, 200, { state: 'cancelled' });
         this.finish('cancelled');
@@ -225,6 +229,14 @@ class LoginPortal {
     this.finish('cancelled');
     this.server?.closeAllConnections();
   }
+}
+
+function isLoopbackOrigin(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) &&
+      !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash;
+  } catch { return false; }
 }
 
 module.exports = { LoginPortal, portalOptions };

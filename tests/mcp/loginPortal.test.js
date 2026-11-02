@@ -23,11 +23,22 @@ async function fixture(t, options = {}) {
   const login = await portal.start();
   const url = new URL(login.url);
   async function request(route, body, overrides = {}) {
-    return fetch(`${url.origin}${route}`, {
+    const options = {
       method: body === undefined ? 'GET' : 'POST',
       headers: { Authorization: `Bearer ${url.hash.slice(1)}`, ...(body === undefined ? {} : { Origin: url.origin, 'Content-Type': 'application/json' }), ...overrides },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    };
+    // fetch may override Host. Use the actual wire header for proxy tests.
+    if (overrides.Host) return new Promise((resolve, reject) => {
+      const req = http.request(`${url.origin}${route}`, options, response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: response.statusCode, headers: response.headers })));
+      });
+      req.once('error', reject);
+      req.end(options.body);
     });
+    return fetch(`${url.origin}${route}`, options);
   }
   return { portal, login, runtime, page, actions, request, url };
 }
@@ -106,6 +117,17 @@ test('expired and cancelled links lose access to the session', async t => {
   assert.equal((await cancelled.request('/api/cancel', {})).status, 200);
   assert.equal(cancelled.portal.closed, true);
   assert.equal(cancelled.portal.reason, 'cancelled');
+});
+
+test('VS Code forwarding may rewrite the loopback host and local port', async t => {
+  const { request } = await fixture(t);
+  const headers = { Host: 'localhost:52123', Origin: 'http://localhost:52123' };
+  const screen = await request('/api/state', undefined, headers);
+  assert.equal(screen.status, 200);
+  const { viewId } = await screen.json();
+  assert.equal((await request('/api/action', { viewId, action: { type: 'key', key: 'Tab' } }, headers)).status, 200);
+  assert.equal((await request('/api/state', undefined, { Host: '127.0.0.1.evil.test:52123' })).status, 403);
+  assert.equal((await request('/api/state', undefined, { ...headers, Origin: 'http://localhost.evil.test:52123' })).status, 403);
 });
 
 test('remote login configuration requires HTTPS and an explicit local forwarding port', () => {

@@ -58,6 +58,8 @@ class TeamsRuntime {
   }
 
   async #launch() {
+    // Never start an authenticated browser on the shared host network.
+    if (!this.launch) require('./privateNetwork').assertPrivateNetwork();
     const launch = this.launch || require('playwright-core')._electron.launch.bind(require('playwright-core')._electron);
     const env = { ...process.env, TEAMS_MCP_MODE: this.mode };
     delete env.ELECTRON_RUN_AS_NODE;
@@ -108,6 +110,7 @@ class TeamsRuntime {
     const authenticated = onTeams && await page.evaluate(sessionReady).catch(() => false);
     return {
       authenticated, mode: this.mode,
+      ...(this.serviceId ? { serviceId: this.serviceId, servicePid: process.pid } : {}),
       state: authenticated ? 'ready' : onTeams ? 'loading_or_login_required' : 'login_required',
       // Never return URLs: login redirect query strings may contain auth codes.
       origin: new URL(page.url()).origin,

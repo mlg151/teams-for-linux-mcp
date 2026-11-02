@@ -1,86 +1,124 @@
-# Headless Microsoft 365 MCP server
+# Shared headless Microsoft 365 MCP service
 
-The server launches the existing Electron app with its existing login implementation and persistent session partition. On Linux, server mode runs inside a private virtual display using `xvfb-run`, even when a desktop display is available. Sign-in windows can render and receive input there without appearing on your real desktop. No call-control tools are registered.
+One systemd **user** service owns one Teams Electron instance, one persistent profile, one sign-in, and one execution queue. Every Claude session connects through a small stdio relay. Disconnecting a client does not close Teams. No call-control tools are exposed.
 
-This is an experimental implementation. Automated checks cover the MCP protocol, Graph request construction, permission fallback, browser interactions against controlled fixtures, and real signed-out headless startup. Live sign-in, people lookup, verified one-to-one chat resolution, and message sending through MCP have also been exercised with a Microsoft account. Other search/read and calendar operations still require validation against your tenant.
+```text
+Claude session A ─┐                       private user/network/mount namespaces
+Claude session B ─┼─ stdio relays ─ Unix socket ─ shared MCP runtime ─ Electron
+Claude session C ─┘                 mode 0600       one queue          + Xvfb
+```
 
-## Install
+This is experimental. Automated checks exercise simultaneous clients, queueing, client disconnects, private networking, the real signed-out Electron app, browser login controls, and Graph request construction. Tenant-specific permissions and a real user's sign-in still need checking on that user's account.
 
-Use Node 24, as specified by `.nvmrc`, and install the repository dependencies:
+## Install on Linux
+
+Use Node 24 (`.nvmrc`) and an ordinary, non-root OS account. On Debian/Ubuntu, install the namespace/network/display tools plus the normal Electron libraries listed in the repository installation documentation:
 
 ```bash
+sudo apt-get install slirp4netns xdg-dbus-proxy util-linux xvfb xauth
 npm ci
 ```
 
-The Electron package must have downloaded its runtime. If your npm configuration disables install scripts, run this explicitly:
+The Electron download must exist. If npm install scripts were disabled, run `node node_modules/electron/install.js` explicitly.
+
+The service requires unprivileged user namespaces. Ubuntu's AppArmor policy may block them. In that case install this repository's scoped launcher once on the host:
 
 ```bash
-node node_modules/electron/install.js
+sudo sh scripts/install-namespace-helper.sh
 ```
 
-On Debian/Ubuntu, install `xvfb` and `xauth` for server mode, along with the normal Electron system libraries listed in the repository's installation documentation. The MCP launcher reports a missing `xvfb-run` command. It does not install system packages or change sandbox/keyring settings automatically.
+This installs a root-owned, **non-setuid** copy of `unshare` at `/usr/local/libexec/teams-mcp-unshare` with an AppArmor rule permitting user namespaces for that executable. It does not disable the host-wide user-namespace restriction or grant host capabilities. Hosts which already allow user namespaces can use `/usr/bin/unshare` directly. Missing isolation or `slirp4netns` makes startup fail; there is no fallback to exposed debugging ports.
 
-## Login through MCP
+Install and start the service **as the account that will own the Teams sign-in**:
 
-1. Configure the MCP client as shown below and connect it.
-2. Call **`login`** with no arguments. It starts the headless app and returns a private browser link.
-3. Open that link. It displays a live image of the app's sign-in window. Click the Microsoft field you want to use, type through the private input above the screen, and use **Enter / Next** or click the Microsoft buttons in the screen. Complete any MFA prompt there or in your authenticator app.
-4. The page confirms completion and revokes the link. Call **`session_status`** in MCP; the same running session is ready to use. No restart or VNC desktop is required.
+```bash
+npm run mcp:install -- --data-dir "$HOME/.local/share/teams-mcp/profile" --login-port 8788
+systemctl --user status teams-mcp.service
+```
 
-Passwords and MFA entries travel directly between this private page and the server's browser, outside the MCP conversation. Do not paste them into chat or tool arguments. The link itself grants temporary access to the sign-in screen; do not share it. It expires after ten minutes and is revoked on completion or when you choose **Close login link**. Closing the link does not log out of Microsoft or clear an existing saved session.
+The installer writes `~/.config/systemd/user/teams-mcp.service` and a mode-0600 `~/.config/teams-mcp/service.env`, then enables and starts the unit. It uses absolute paths to this checkout and Node. Re-run the installer after moving either one. Existing `service.env` settings are preserved; edit that file to change an existing installation:
 
-Authenticator approval, SMS, and typed verification codes can be completed through this view. Hardware security keys and passkeys depend on the server's device/browser environment; use another Microsoft sign-in method if the required device is only connected to your local computer. The server does not bypass MFA or tenant sign-in policies.
+```ini
+TEAMS_MCP_USER_DATA_DIR="/home/you/.local/share/teams-mcp/profile"
+TEAMS_MCP_LOGIN_PORT=8788
+```
 
-Keep the same persistent profile path, OS user, and keyring environment for subsequent launches. The profile contains your Microsoft session; keep it private and outside version control. Copying encrypted cookies to another machine is not a supported login method. The ordinary desktop app and the MCP runtime cannot share a profile simultaneously.
+Keep the profile outside `/tmp`, owned by this user, with mode 0700. The service uses private temporary filesystems for `/tmp` and `/dev/shm`. A desktop Teams instance must use another profile. Every OS account needs its own profile, socket, and a distinct host login port if multiple users run this service. The port is reserved by slirp while the service runs, including between login links.
 
-The optional `npm run mcp:login -- --data-dir /absolute/profile/path` command still opens the full desktop app when a display is available. It is not needed for the MCP browser-link flow.
+To keep the user manager running after the last login ends and start it at boot:
 
-## Connect an MCP client
+```bash
+sudo loginctl enable-linger "$USER"
+```
 
-Configure a local stdio MCP server. Use absolute paths; `~` does not expand inside JSON arguments:
+An administrator may need to enable lingering under the host's policy. Check with `loginctl show-user "$USER" -p Linger`. The unit uses `Restart=always`, restarts after three seconds, and stops the entire service cgroup before a replacement starts. Repeated startup failures hit a rate limit. An exclusive `flock` prevents a second service from starting against the same runtime directory.
+
+If a remote terminal has no user-bus environment, set `XDG_RUNTIME_DIR=/run/user/$(id -u)` and `DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus` before using `systemctl --user`.
+
+## Configure every Claude session
+
+In **`~/.claude.json`**, replace only the `mcpServers.teams` entry, preserving other settings:
 
 ```json
 {
   "mcpServers": {
     "teams": {
-      "command": "node",
-      "args": [
-        "/absolute/path/teams-for-linux-mcp/scripts/mcp.js",
-        "--data-dir",
-        "/home/you/.local/share/teams-mcp/profile"
-      ]
+      "type": "stdio",
+      "command": "/usr/bin/node",
+      "args": ["/home/you/teams-for-linux-mcp/scripts/mcp.js"]
     }
   }
 }
 ```
 
-Use `node scripts/mcp.js` directly in the client configuration. `npm run mcp` is convenient in a terminal but npm's banner is not part of the MCP protocol. The direct command reserves stdout for MCP; diagnostic messages go to stderr.
+Use your actual absolute Node and checkout paths; `~` does not expand in JSON. Remove the old `--data-dir` argument and per-client `TEAMS_MCP_LOGIN_PORT` setting. Profile and login settings now belong to the service. The default socket is `$XDG_RUNTIME_DIR/teams-mcp/mcp.sock`, falling back to `/run/user/UID/teams-mcp/mcp.sock`. An explicit `--socket /absolute/path/mcp.sock` relay argument is available when a client has a different runtime environment.
 
-Electron starts lazily on the first tool call. Call `login` for a new session, or `session_status` to check an existing session. If sign-in has expired, call `login` again and use the new browser link; the server keeps running.
+Close/restart old Claude sessions after changing their configuration. Before starting the service against an existing profile, stop their old MCP launchers and their Electron/Xvfb descendants. Inspect `ps -u "$USER" -o pid,ppid,args` to identify processes for this checkout; do not stop unrelated Node or Electron applications. Old sessions retain the old configuration until restarted.
 
-The profile defaults to the ordinary app's user-data directory when neither `--data-dir` nor `TEAMS_MCP_USER_DATA_DIR` is set. Supplying a dedicated directory makes profile selection explicit. Headless options are applied in memory; the server does not rewrite the desktop configuration.
+A relay only forwards MCP bytes. It imports no browser code, never starts the service, and never reconnects or replays a request. If the service is unavailable, start it and reconnect the MCP client. Use the direct Node command in Claude, since npm prints a non-protocol banner to stdout.
 
-## Browser link on a remote server
+## Sign in through VS Code Remote Tunnels
 
-The login listener binds only to `127.0.0.1`. When the MCP server runs on your computer, open the returned link directly. When it runs on another machine, `127.0.0.1` in your browser refers to your computer, so forward the login port over SSH.
+1. In the VS Code window connected to the Linux host, open the **Ports** tab. Choose **Forward a Port**, enter remote port **8788**, and keep the forward private. Do this **before** requesting a login link.
+2. From Claude, call **`login`** with no arguments. Open the returned private link on your Mac. It looks like `http://127.0.0.1:8788/#...`.
+3. If VS Code selected another local port, replace the link's host/port with the **Forwarded Address** from the Ports tab, retaining the entire `/#...` fragment. Both `localhost` and loopback IP addresses on any local port are accepted. Do not make the port public.
+4. The page displays the actual headless sign-in window. Click a field in the image, type using the private input above it, and complete Microsoft sign-in and MFA. Passwords and codes travel outside the MCP conversation.
+5. The page confirms completion and revokes the link. Call **`session_status`**. All Claude sessions now use the same signed-in service. Keep the service/profile; ending Claude does not sign you out.
 
-Set a fixed port in the MCP server's environment:
+The link expires after ten minutes. If the tunnel was missing or the link expired, forward the port and call `login` again. You do not need to restart Teams. Closing a login link does not clear the Microsoft session. Do not share the fragment: it is a temporary bearer credential for the sign-in screen. Hardware keys/passkeys depend on devices available to the remote browser; use another permitted sign-in method when appropriate.
 
-```json
-"env": { "TEAMS_MCP_LOGIN_PORT": "8787" }
-```
+For SSH instead of Remote Tunnels, forward `ssh -N -L 8788:127.0.0.1:8788 your-server` before opening the link. An existing HTTPS proxy can use `TEAMS_MCP_LOGIN_PUBLIC_URL=https://login.example.test` in `service.env`; preserve the browser Origin header and public Host (or loopback upstream Host). The service itself still forwards only a loopback host listener.
 
-Then, on the computer running your browser:
+Operator commands use the same socket and tools:
 
 ```bash
-ssh -N -L 8787:127.0.0.1:8787 your-server
+npm run mcp:status
+npm run mcp:login
+node scripts/mcp-call.js search_chats --arguments '{"query":"Your name"}'
 ```
 
-Call `login` and open its returned `http://127.0.0.1:8787/#...` link. Microsoft sign-in still runs inside the app on the server; the tunnel carries the private screen and input. The tunnel must be active when opening the link.
+After login, choose your own chat deliberately from `search_chats` results and verify its participants before calling `send_message` with its explicit `chatId`. Send one test message, then use `read_messages` on that chat to check it. For a multi-client send test use two distinct message texts, and verify each appears once. The test suite uses synthetic sends; it never sends real Microsoft messages.
 
-Alternatively, an existing HTTPS reverse proxy can forward a dedicated origin to that local port. Set `TEAMS_MCP_LOGIN_PUBLIC_URL=https://your-login-host.example` and `TEAMS_MCP_LOGIN_PORT=8787`. The public URL must be an HTTPS origin with no path, query string, or credentials. The proxy must preserve the browser's Origin header and either the public Host or the local upstream Host. The server returns links at that HTTPS origin and still binds only to loopback. It does not configure or publish a reverse proxy itself.
+## Start, restart and troubleshoot
 
-For an IP-address link, Tailscale Serve can forward TCP privately within your tailnet. Set `TEAMS_MCP_LOGIN_PUBLIC_URL=http://YOUR_TAILSCALE_IP:8443`, `TEAMS_MCP_LOGIN_PORT=8787`, and explicitly set `TEAMS_MCP_LOGIN_ALLOW_TAILNET_HTTP=1`, then run `tailscale serve --bg --tcp=8443 tcp://127.0.0.1:8787`. TCP forwarding preserves IP-based Host headers; Tailscale's HTTP virtual-host proxy expects its DNS name. This exception accepts only Tailscale IPv4 addresses in `100.64.0.0/10`; it is intended for traffic carried by Tailscale, not an unencrypted public or LAN listener. The app continues to listen only on loopback.
+```bash
+systemctl --user start teams-mcp.service
+systemctl --user restart teams-mcp.service
+systemctl --user stop teams-mcp.service
+journalctl --user -u teams-mcp.service -n 60 --no-pager
+```
+
+After editing `service.env`, restart the unit. After editing the unit, run `systemctl --user daemon-reload` first. After resolving a repeated startup failure, use `systemctl --user reset-failed teams-mcp.service` and start it again. To remove autostart, use `systemctl --user disable --now teams-mcp.service`; this preserves the profile. A service restart disconnects existing clients; reconnect their MCP transport. In-flight writes are never replayed.
+
+Use `session_status.serviceId` and `.servicePid` to confirm clients share the same service incarnation. These change on a full service restart. A persistent profile reuses Microsoft's saved session when still valid; Microsoft may require sign-in again. Keep the same OS account/keyring environment. Profile migration by copying encrypted cookies is not supported.
+
+## Security on a shared host
+
+Electron's inspector and remote-debugging ports bind **inside private network namespaces**, along with the service and Xvfb. They have no host forwarding. The namespace also has private `/tmp` and `/dev/shm`, protecting X11 sockets. `slirp4netns --disable-host-loopback` supplies outbound networking and forwards **only** the chosen login port to host `127.0.0.1`. The login API requires a random, expiring bearer credential; unauthenticated access reveals no sign-in screen or input.
+
+`xdg-dbus-proxy` retains access to the owning user's existing Secret Service/KWallet keyring while hiding the systemd bus service. This prevents Chromium's desktop-portal integration from moving Electron outside the service cgroup, so a supervisor crash cannot leave it holding the profile lock. It does not switch cookie encryption to plaintext or replace the user's keyring. Re-run the scoped helper installer after updating `util-linux` to refresh its copy of `unshare`.
+
+Clients use a filesystem Unix socket, mode **0600**, in a mode-0700 user-owned runtime directory. The relay rejects unowned or group/world-accessible sockets. Other unprivileged OS users cannot connect to the MCP socket or reach the private debugging listeners through host TCP. Root and other processes running as the owning OS account remain trusted. This protects cross-user access; it is not a sandbox against the owner or administrator.
 
 ## Tools
 
@@ -112,22 +150,13 @@ Search tools accept `backend: "auto" | "graph" | "browser"`. `auto` attempts Gra
 
 ## How session access works
 
-```text
-MCP stdio client
-  -> Node MCP server
-    -> Playwright-controlled existing Electron app
-      -> Teams session authentication / visible web-app controls
-```
+`SessionGraph` reuses this repository's `GraphApiClient.acquireToken()` through the signed-in Teams renderer. Graph requests remain on `https://graph.microsoft.com/v1.0/`, validate continuation URLs, and reject redirects. Raw session tokens never appear in MCP results. All clients share the same token client/cache as well as the runtime.
 
-`SessionGraph` reuses this repository's `GraphApiClient.acquireToken()` through the signed-in Teams renderer. Requests stay on `https://graph.microsoft.com/v1.0/`; continuation URLs are validated, redirects are rejected, and raw session tokens are never included in tool results.
+Using the Teams session does not request a separate Entra application consent. It retains the session token's existing permissions: it does not bypass tenant policies or grant scopes that account lacks. Chat-history reads, channels, OneDrive, and calendar operations can return explicit permission errors. Auto search falls back to signed-in browser controls only for permission/token availability failures.
 
-This retains the existing session-token permission limits. Calendar and chat sending build on the repository's existing Graph functionality. Chat-history reads, channel access, and OneDrive API operations may require scopes not available in a particular Teams session. These tools return explicit permission errors; adding MCP does not grant extra access.
+Browser fallback targets English UI labels and known Teams/OneDrive layouts and request patterns. It is fixture-tested and needs tenant validation. Results identify their source and cover **visible results only**; they do not provide exhaustive history or Graph pagination. A UI mismatch returns an error instead of returning stale results.
 
-The browser search adapters use Teams' search box/category filters and the embedded OneDrive search view. They wait for a Microsoft search response matching the submitted query, then read the rendered result pane. This supports searches through the app's existing access without asking for broader Graph permissions.
-
-Browser fallback currently targets English UI labels and known Teams/OneDrive layouts and search request patterns. It is fixture-tested, not yet tenant-tested. If those patterns do not match, it returns an explicit UI error instead of returning the previous screen as search results. Browser responses identify their source and state that they cover **visible results only**. They do not provide exhaustive history or Graph pagination; the `viewText` field is rendered text, not a structured message collection. The Teams/Channels search filter can also cover a broader scope than Graph's joined-Teams list.
-
-All tools serialize operations against the single browser session. A cancelled queued operation is discarded before it starts. Sends and calendar writes are not automatically retried. If a request times out after dispatch, the result reports `outcome_unknown`: inspect Teams/calendar before retrying to avoid duplicates.
+All clients' tools serialize through one shared queue. A cancelled queued operation is discarded before dispatch. Calendar writes and sends are never automatically retried. If a request times out or loses its connection after dispatch, delivery may be uncertain: inspect Teams/calendar before attempting it again. Queueing prevents concurrent UI interference and duplicate automatic dispatch; it cannot guarantee exactly-once delivery across a crash or a manual retry after an unknown outcome.
 
 ## Validation
 
@@ -138,15 +167,15 @@ npm run test:mcp:runtime
 npm run lint
 ```
 
-The browser tests use a real Electron renderer with controlled search fixtures. The runtime smoke test starts the real stdio server with an empty temporary profile, exercises discovery/session status under Xvfb, and checks clean exit on client disconnect. Neither test sends Microsoft messages or creates calendar events.
+Unit/protocol tests connect three real relay processes to a signed-in fixture runtime, exercise concurrent sends through one queue, reject insecure socket permissions, and check that client EOF leaves the service available. Browser tests use synthetic sign-in/search pages, including password/MFA controls; they never use an account.
 
-The login tests also exercise private link access, expiry/revocation, stale screens, and a full username/password/MFA fixture through the live browser controls at desktop and mobile widths. The real runtime smoke test obtains a login link through MCP and captures the headless app's sign-in screen through its authenticated HTTP endpoint. These checks do not replace a live tenant sign-in test.
+The Linux runtime test requires the installation prerequisites and working namespace support. It launches real Electron under one private Xvfb, connects three relays, compares their shared signed-out status, verifies namespace separation and host-inaccessible debug listeners, exercises the bearer-protected login screen through slirp, and rejects a duplicate service before browser startup. The profile lives in a temporary user runtime directory outside `/tmp` and is removed afterward.
 
-After first login, validate `session_status`, then each search with a known query. Try `backend: "graph"` and `backend: "browser"` separately to identify which paths your tenant permits. Validate sends and calendar writes only with an intentional test destination/event.
+For live acceptance, sign in once as the intended OS user, compare `session_status` in three Claude sessions, end one session and check the others, then intentionally send to your own chat. Test Graph/browser search paths separately to identify tenant permissions. Verify service crash recovery with systemd and reconnect clients afterward; saved sign-in persistence depends on Microsoft's session validity.
 
 ## References
 
 - [Existing session-token implementation](../graphApi/README.md)
-- [Electron on headless Linux](https://www.electronjs.org/docs/latest/tutorial/testing-on-headless-ci)
+- [slirp4netns](https://github.com/rootless-containers/slirp4netns)
 - [Playwright Electron support](https://playwright.dev/docs/api/class-electron)
 - [Microsoft Graph search](https://learn.microsoft.com/en-us/graph/api/resources/search-api-overview?view=graph-rest-1.0)

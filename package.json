@@ -20,7 +20,10 @@
   "license": "GPL-3.0-or-later",
   "scripts": {
     "mcp": "node scripts/mcp.js",
-    "mcp:login": "node scripts/mcp.js --login",
+    "mcp:login": "node scripts/mcp-call.js login",
+    "mcp:status": "node scripts/mcp-call.js session_status",
+    "mcp:install": "node scripts/install-mcp-service.js",
+    "mcp:service": "node scripts/mcp-service.js",
     "test:mcp": "node --test tests/mcp/*.test.js",
     "test:mcp:browser": "xvfb-run -a node --test tests/mcp-ui/*.test.js",
     "test:mcp:runtime": "node --test tests/mcp-runtime/*.test.js",
