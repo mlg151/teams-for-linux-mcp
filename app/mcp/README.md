@@ -112,6 +112,8 @@ After editing `service.env`, restart the unit. After editing the unit, run `syst
 
 Use `session_status.serviceId` and `.servicePid` to confirm clients share the same service incarnation. These change on a full service restart. A persistent profile reuses Microsoft's saved session when still valid; Microsoft may require sign-in again. Keep the same OS account/keyring environment. Profile migration by copying encrypted cookies is not supported.
 
+`session_status.authenticated` checks Teams' visible UI readiness; it does not acquire a Graph token. A cached Teams shell can still appear ready while Microsoft requires fresh authentication (for example, silent sign-in error `AADSTS50058`). Verify a read/search operation as well before declaring live messaging acceptance complete. `session_api_unavailable` can also mean Teams' private token interface has changed. A successful signed-out startup test or UI readiness flag alone does not prove sends work for an account.
+
 ## Security on a shared host
 
 Electron's inspector and remote-debugging ports bind **inside private network namespaces**, along with the service and Xvfb. They have no host forwarding. The namespace also has private `/tmp` and `/dev/shm`, protecting X11 sockets. `slirp4netns --disable-host-loopback` supplies outbound networking and forwards **only** the chosen login port to host `127.0.0.1`. The login API requires a random, expiring bearer credential; unauthenticated access reveals no sign-in screen or input.
@@ -124,7 +126,7 @@ Clients use a filesystem Unix socket, mode **0600**, in a mode-0700 user-owned r
 
 | Tool | Purpose |
 | --- | --- |
-| `session_status` | Start the runtime and check login readiness |
+| `session_status` | Check Teams UI readiness and shared service identity |
 | `login` | Return a private browser link for headless Microsoft sign-in and MFA |
 | `search_people` | Find people by name or email and return their exact user IDs and email addresses |
 | `resolve_chat` | Resolve a verified one-to-one chat for an exact person without sending a message |

@@ -50,7 +50,7 @@ function createServer(runtime, service = new Microsoft365Service(runtime)) {
     });
   }
 
-  tool('session_status', 'Start the headless Teams runtime if needed and check whether Microsoft sign-in is ready.', z.object({}), () => runtime.status());
+  tool('session_status', 'Check Teams web UI readiness and shared service identity. This does not probe Microsoft Graph token availability or permissions.', z.object({}), () => runtime.status());
   tool('login', 'Return a private browser link for completing Microsoft sign-in and MFA in the existing headless Teams session. Passwords and MFA entries stay outside MCP. The link expires after ten minutes.', z.object({}), () => runtime.beginLogin(), false);
   tool('search_people', 'Find people by name or email using the signed-in Teams session. Returns exact user IDs and email addresses for resolving the intended recipient.',
     z.object({ query, limit }), args => service.searchPeople(args));
