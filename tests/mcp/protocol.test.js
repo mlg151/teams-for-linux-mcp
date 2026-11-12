@@ -33,12 +33,13 @@ test('MCP discovers all requested tools and exposes no call controls', async t =
   const { result } = await request('tools/list');
   const names = result.tools.map(tool => tool.name);
   for (const name of ['session_status', 'login', 'search_people', 'resolve_chat', 'send_message', 'search_messages', 'search_chats', 'search_teams', 'search_onedrive', 'list_calendar_events',
-    'search_sites', 'list_drives', 'list_drive_items', 'download_file']) {
+    'search_sites', 'list_drives', 'list_drive_items', 'download_file', 'upload_file']) {
     assert.ok(names.includes(name), name);
   }
   assert.equal(names.some(name => /call|mute|camera|presence/.test(name)), false);
   assert.equal(result.tools.find(tool => tool.name === 'send_message').annotations.readOnlyHint, false);
   assert.equal(result.tools.find(tool => tool.name === 'download_file').annotations.readOnlyHint, true);
+  assert.equal(result.tools.find(tool => tool.name === 'upload_file').annotations.readOnlyHint, false);
 });
 
 test('MCP resolves a selected person before sending to the returned chat', async t => {
@@ -76,11 +77,14 @@ test('MCP drive tools require a drive and file path before executing them', asyn
   const request = await connect(t, {
     listDriveItems: async () => { calls++; return { items: [] }; },
     downloadFile: async () => { calls++; return { path: '/tmp/file.txt' }; },
+    uploadFile: async () => { calls++; return { uploaded: true }; },
   });
   for (const [name, args] of [
     ['list_drive_items', {}],
     ['download_file', { driveId: 'drive-1' }],
     ['download_file', { filePath: 'docs/file.txt' }],
+    ['upload_file', { driveId: 'drive-1' }],
+    ['upload_file', { driveId: 'drive-1', filePath: 'docs/file.txt' }],
   ]) {
     const response = await request('tools/call', { name, arguments: args });
     assert.ok(response.error || response.result?.isError, `${name} ${JSON.stringify(args)}`);

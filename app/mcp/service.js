@@ -12,6 +12,11 @@ const { McpOperationError } = require('./errors');
 const id = encodeURIComponent;
 const literal = text => encodeURIComponent(text.replaceAll("'", "''"));
 
+// Graph hard limits: small-file PUT content is capped at 250 MB; larger
+// uploads require an upload session in 10 MB chunks.
+const SMALL_UPLOAD_LIMIT = 250 * 1024 * 1024;
+const UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024;
+
 function renderMarkdown(content) {
   return marked.parse(content, { async: false });
 }
@@ -35,6 +40,12 @@ function driveContentEndpoint(driveId, filePath) {
   const clean = (filePath || '').replace(/^\//, '');
   if (!clean || clean === 'root') throw new McpOperationError('invalid_path', 'The path must identify a file below the drive root, not the root itself.');
   return `/drives/${id(driveId)}/root:/${drivePathKey(clean)}:/content`;
+}
+
+function driveUploadEndpoint(driveId, filePath) {
+  const clean = (filePath || '').replace(/^\//, '');
+  if (!clean || clean === 'root') throw new McpOperationError('invalid_path', 'The path must identify a file below the drive root, not the root itself.');
+  return `/drives/${id(driveId)}/root:/${drivePathKey(clean)}:`;
 }
 
 function maxDownloadBytes() {
@@ -79,6 +90,19 @@ function uniqueDestination(directory, filePath) {
     destination = path.join(directory, `${stem}-${Date.now().toString(36)}${index ? `-${index}` : ''}${ext}`);
   }
   return destination;
+}
+
+// Upload sources may live anywhere this user can read (project directories,
+// /tmp workspaces), but must be regular files owned by this user.
+function resolveUploadSource(sourcePath) {
+  const resolved = fs.realpathSync(path.resolve(sourcePath));
+  const stat = fs.statSync(resolved);
+  let readable = true;
+  try { fs.accessSync(resolved, fs.constants.R_OK); } catch { readable = false; }
+  if (!stat.isFile() || stat.uid !== process.getuid() || !readable) {
+    throw new McpOperationError('invalid_path', 'The source must be a readable regular file owned by this user.');
+  }
+  return { path: resolved, size: stat.size };
 }
 
 class Microsoft365Service {
@@ -256,6 +280,72 @@ class Microsoft365Service {
     }
   }
 
+  async uploadFile({ driveId, filePath, sourcePath, overwrite = false }) {
+    const { path: source, size } = resolveUploadSource(sourcePath);
+    const name = path.basename(source);
+    if (size === 0) throw new McpOperationError('invalid_path', 'The source file is empty; nothing was uploaded.');
+    const request = async (endpoint, { method, url, headers = {}, options }) => {
+      const response = await this.graph.requestStream(endpoint, { method, url, headers, options });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        const code = response.status === 412 || response.status === 409 ? 'file_exists' :
+          response.status === 404 ? 'not_found' : response.status === 403 ? 'permission_denied' :
+            response.status === 401 ? 'login_required' : response.status === 429 ? 'rate_limited' :
+              response.status >= 500 ? 'outcome_unknown' : 'graph_error';
+        throw new McpOperationError(code,
+          code === 'file_exists' ? 'A file with this name already exists. Re-run with overwrite: true to replace it, or choose a different name.' :
+            code === 'not_found' ? 'The destination or its parent folder was not found. Create the parent folder in SharePoint first, then upload.' :
+            code === 'permission_denied' ? 'This operation is not permitted by the Teams session Graph token.' :
+            code === 'outcome_unknown' ? 'Microsoft returned a server error. Check the drive before retrying this upload.' :
+              `Microsoft Graph returned HTTP ${response.status}.`,
+          { status: response.status, ...(response.headers.get('retry-after') ? { retryAfter: response.headers.get('retry-after') } : {}) });
+      }
+      return data;
+    };
+
+    if (size <= SMALL_UPLOAD_LIMIT) {
+      // An unmatched if-match precondition turns an existing target into a 412
+      // instead of silently replacing it.
+      const item = await request(driveContentEndpoint(driveId, filePath), {
+        method: 'PUT', headers: overwrite ? {} : { 'if-match': '0' },
+        options: { body: fs.createReadStream(source), contentType: 'text/plain', contentLength: size },
+      });
+      if (!item?.id) throw new McpOperationError('outcome_unknown', 'Microsoft did not return the uploaded item. Check the drive before retrying.');
+      return { source: 'graph', uploaded: true, method: 'put', item, size };
+    }
+
+    const session = await request(driveUploadEndpoint(driveId, filePath) + '/createUploadSession', {
+      method: 'POST', options: { body: JSON.stringify({ item: { fields: { name } } }), contentType: 'application/json' },
+    });
+    const uploadUrl = session?.uploadUrl;
+    if (!uploadUrl) throw new McpOperationError('invalid_response', 'Microsoft Graph did not return an upload URL. The file was not uploaded.');
+    let offset = 0;
+    let item;
+    while (offset < size) {
+      const end = Math.min(size, offset + UPLOAD_CHUNK_SIZE) - 1;
+      const file = fs.createReadStream(source, { start: offset, end });
+      const response = await this.graph.requestStream(null, {
+        method: 'PUT', url: uploadUrl,
+        headers: { 'Content-Length': String(end - offset + 1), 'Content-Range': `bytes ${offset}-${end}/${size}` },
+        options: { body: file, contentType: 'application/octet-stream', contentLength: end - offset + 1 },
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        const code = response.status === 412 || response.status === 409 ? 'file_exists' :
+          response.status === 403 ? 'permission_denied' : response.status === 401 ? 'login_required' :
+            response.status === 429 ? 'rate_limited' : response.status >= 500 ? 'outcome_unknown' : 'graph_error';
+        throw new McpOperationError(code,
+          code === 'file_exists' ? 'A file with this name already exists. Re-run with overwrite: true to replace it, or choose a different name.' :
+            `The upload session failed at byte ${offset} of ${size}. The file may be partially uploaded; check the drive before retrying.`,
+          { status: response.status });
+      }
+      offset = end + 1;
+      if (data?.id) item = data;
+    }
+    if (!item?.id) throw new McpOperationError('outcome_unknown', 'Microsoft did not confirm the uploaded item. Check the drive before retrying.');
+    return { source: 'graph', uploaded: true, method: 'upload_session', item, size };
+  }
+
   listChannels({ teamId, cursor }) {
     return this.graph.collection(`/teams/${id(teamId)}/channels?$select=id,displayName,description,membershipType,webUrl`, { cursor });
   }
@@ -291,4 +381,4 @@ class Microsoft365Service {
   }
 }
 
-module.exports = { Microsoft365Service, renderMarkdown, driveContentEndpoint, secureDownloadDirectory, defaultDownloadsDirectory };
+module.exports = { Microsoft365Service, renderMarkdown, driveChildrenEndpoint, driveContentEndpoint, driveUploadEndpoint, secureDownloadDirectory, defaultDownloadsDirectory, resolveUploadSource, SMALL_UPLOAD_LIMIT, UPLOAD_CHUNK_SIZE };

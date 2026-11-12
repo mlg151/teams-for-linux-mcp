@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { Microsoft365Service } = require('../../app/mcp/service');
+const { Microsoft365Service, SMALL_UPLOAD_LIMIT, UPLOAD_CHUNK_SIZE } = require('../../app/mcp/service');
 const { McpOperationError } = require('../../app/mcp/errors');
 
 test('people lookup returns exact recipient identifiers and safely quotes the query', async () => {
@@ -195,5 +195,85 @@ test('download_file refuses symlinked destinations and enforces the size cap', a
   } finally {
     if (original === undefined) delete process.env.TEAMS_MCP_MAX_DOWNLOAD_MB; else process.env.TEAMS_MCP_MAX_DOWNLOAD_MB = original;
   }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('small uploads PUT content once and refuse existing names without overwrite', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-upload-'));
+  const source = path.join(dir, 'notes.txt');
+  fs.writeFileSync(source, 'hello world\n');
+  const calls = [];
+  // Destroyed request-body streams still settle their pending open; wait for
+  // them to close before the fixture directory is removed.
+  const streams = [];
+  const service = new Microsoft365Service({}, {
+    graph: { requestStream: async (endpoint, options) => {
+      calls.push({ endpoint, method: options.method, headers: options.headers, length: options.options.contentLength });
+      const body = options.options.body;
+      if (typeof body?.destroy === 'function') streams.push(body);
+      body?.destroy?.();
+      if (endpoint.endsWith('/content')) return new Response(JSON.stringify({ id: 'item-1', name: 'notes.txt' }), { status: 200 });
+      return new Response('{}', { status: 200 });
+    } }, browser: {},
+  });
+  const result = await service.uploadFile({ driveId: 'drive-1', filePath: 'docs/notes.txt', sourcePath: source });
+  assert.equal(result.method, 'put');
+  assert.equal(result.item.id, 'item-1');
+  assert.equal(calls[0].endpoint, '/drives/drive-1/root:/docs/notes.txt:/content');
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].headers['if-match'], '0');
+  assert.equal(calls[0].length, 12);
+  await service.uploadFile({ driveId: 'drive-1', filePath: 'docs/notes.txt', sourcePath: source, overwrite: true });
+  assert.equal(calls[1].headers['if-match'], undefined);
+  const existing = new Microsoft365Service({}, {
+    graph: { requestStream: async (endpoint, options) => {
+      const body = options.options.body;
+      if (typeof body?.destroy === 'function') streams.push(body);
+      body?.destroy?.();
+      return new Response(JSON.stringify({ error: { message: 'precondition failed' } }), { status: 412 });
+    } }, browser: {},
+  });
+  await assert.rejects(existing.uploadFile({ driveId: 'drive-1', filePath: 'docs/notes.txt', sourcePath: source }), { code: 'file_exists' });
+  await assert.rejects(service.uploadFile({ driveId: 'drive-1', filePath: 'docs/missing.txt', sourcePath: dir }), { code: 'invalid_path' });
+  await Promise.all(streams.map(body => new Promise(resolve => body.once('close', resolve))));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('large uploads use a chunked upload session with byte ranges', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-upload2-'));
+  const source = path.join(dir, 'large.bin');
+  const size = 2 * SMALL_UPLOAD_LIMIT + 12345;
+  const fd = fs.openSync(source, 'w');
+  fs.ftruncateSync(fd, size);
+  fs.closeSync(fd);
+  const calls = [];
+  const streams = [];
+  const service = new Microsoft365Service({}, {
+    graph: { requestStream: async (endpoint, options) => {
+      const body = options.options.body;
+      calls.push({ endpoint, method: options.method, url: options.url, headers: options.headers, body });
+      if (typeof body?.destroy === 'function') streams.push(body);
+      body?.destroy?.();
+      if (endpoint) return new Response(JSON.stringify({ uploadUrl: 'https://graph.sharepointonline.com/v2.1/_api/upload/session' }), { status: 200 });
+      return new Response(JSON.stringify({ id: 'item-1', name: 'large.bin' }), { status: 200 });
+    } }, browser: {},
+  });
+  const result = await service.uploadFile({ driveId: 'drive-1', filePath: 'big/large.bin', sourcePath: source });
+  assert.equal(result.method, 'upload_session');
+  assert.equal(result.size, size);
+  assert.equal(calls[0].endpoint, '/drives/drive-1/root:/big/large.bin:/createUploadSession');
+  assert.equal(calls[0].method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].body), { item: { fields: { name: 'large.bin' } } });
+  const chunks = calls.slice(1);
+  assert.equal(chunks.length, Math.ceil(size / UPLOAD_CHUNK_SIZE));
+  for (let index = 0; index < chunks.length; index++) {
+    const start = index * UPLOAD_CHUNK_SIZE;
+    const end = Math.min(size, start + UPLOAD_CHUNK_SIZE) - 1;
+    assert.equal(chunks[index].url, 'https://graph.sharepointonline.com/v2.1/_api/upload/session');
+    assert.equal(chunks[index].method, 'PUT');
+    assert.equal(chunks[index].headers['Content-Range'], `bytes ${start}-${end}/${size}`);
+    assert.equal(chunks[index].headers['Content-Length'], String(end - start + 1));
+  }
+  await Promise.all(streams.map(body => new Promise(resolve => body.once('close', resolve))));
   fs.rmSync(dir, { recursive: true, force: true });
 });
