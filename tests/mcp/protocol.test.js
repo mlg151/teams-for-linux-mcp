@@ -32,7 +32,8 @@ test('MCP discovers all requested tools and exposes no call controls', async t =
   const request = await connect(t);
   const { result } = await request('tools/list');
   const names = result.tools.map(tool => tool.name);
-  for (const name of ['session_status', 'login', 'search_people', 'resolve_chat', 'send_message', 'search_messages', 'search_chats', 'search_teams', 'search_onedrive', 'list_calendar_events']) {
+  for (const name of ['session_status', 'login', 'search_people', 'resolve_chat', 'send_message', 'search_messages', 'search_chats', 'search_teams', 'search_onedrive', 'list_calendar_events',
+    'search_sites', 'list_drives', 'list_drive_items']) {
     assert.ok(names.includes(name), name);
   }
   assert.equal(names.some(name => /call|mute|camera|presence/.test(name)), false);
@@ -67,6 +68,20 @@ test('MCP input validation prevents ambiguous sends before executing them', asyn
   assert.equal(calls, 0);
   assert.equal((await request('tools/call', { name: 'send_message', arguments: { chatId: 'a', content: 'hello' } })).result.structuredContent.sent, true);
   assert.equal(calls, 1);
+});
+
+test('MCP drive tools require a drive and file path before executing them', async t => {
+  let calls = 0;
+  const request = await connect(t, {
+    listDriveItems: async () => { calls++; return { items: [] }; },
+  });
+  for (const [name, args] of [
+    ['list_drive_items', {}],
+  ]) {
+    const response = await request('tools/call', { name, arguments: args });
+    assert.ok(response.error || response.result?.isError, `${name} ${JSON.stringify(args)}`);
+  }
+  assert.equal(calls, 0);
 });
 
 test('MCP send_message only accepts text, markdown, or html formats', async t => {

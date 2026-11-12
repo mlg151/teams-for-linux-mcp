@@ -63,6 +63,12 @@ function createServer(runtime, service = new Microsoft365Service(runtime)) {
   tool('search_onedrive', 'Search the signed-in user’s OneDrive. Auto uses Graph, then the embedded OneDrive search UI if permissions are missing. OneDrive must be pinned for browser fallback. Follow Graph nextCursor with the same query and limit.', search.extend({ cursor }), args => service.searchOneDrive(args));
   tool('list_onedrive_files', 'List a OneDrive folder using the Teams session Graph token. Follow nextCursor with the same arguments.',
     z.object({ folderId: identifier.default('root'), limit, cursor }), args => service.listOneDrive(args));
+  tool('search_sites', 'Search accessible SharePoint sites by name or keyword using the session Graph token. Returns siteIds and web URLs for browsing or uploading files.',
+    search, args => service.searchSites(args));
+  tool('list_drives', 'List the user\'s OneDrive and accessible SharePoint site drives using the session Graph token. Returns driveIds for listing, downloading, or uploading files. Optional query filters drive names client-side.',
+    z.object({ query: z.string().trim().min(1).max(1000).optional(), limit }), args => service.listDrives(args));
+  tool('list_drive_items', 'List a OneDrive or SharePoint drive folder using the session Graph token. folderPath is relative to the drive root (default: root). Follow nextCursor with the same arguments.',
+    z.object({ driveId: identifier, folderPath: z.string().trim().min(1).max(1000).default('root'), limit, cursor }), args => service.listDriveItems(args));
   tool('list_channels', 'List channels of a known Team using the session Graph token. Follow nextCursor with the same arguments.',
     z.object({ teamId: identifier, cursor }), args => service.listChannels(args));
   tool('read_messages', 'Read messages from exactly one chat or Team/channel using the session Graph token. Follow nextCursor with the same arguments.',

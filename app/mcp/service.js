@@ -12,6 +12,21 @@ function renderMarkdown(content) {
   return marked.parse(content, { async: false });
 }
 
+// Drive items below the root use the colon path syntax: root:/{path}, where
+// each path segment is percent-encoded and separators stay literal slashes.
+// See "How to address resources" in the Microsoft Graph docs.
+function drivePathKey(clean) {
+  const segments = clean.split('/');
+  if (segments.some(segment => !segment)) throw new McpOperationError('invalid_path', 'The path must not contain empty segments.');
+  return segments.map(encodeURIComponent).join('/');
+}
+
+function driveChildrenEndpoint(driveId, folderPath, limit) {
+  const clean = (folderPath || 'root').replace(/^\//, '');
+  const where = clean === 'root' ? 'root/children' : `root:/${drivePathKey(clean)}:/children`;
+  return `/drives/${id(driveId)}/${where}?$top=${limit}`;
+}
+
 class Microsoft365Service {
   constructor(runtime, { graph = new SessionGraph(runtime), browser = new TeamsBrowser(runtime) } = {}) {
     this.runtime = runtime;
@@ -97,6 +112,37 @@ class Microsoft365Service {
   listOneDrive({ folderId = 'root', limit = 20, cursor }) {
     const folder = folderId === 'root' ? 'root' : `items/${id(folderId)}`;
     return this.graph.collection(`/me/drive/${folder}/children?$top=${limit}`, { cursor });
+  }
+
+  async searchSites({ query, limit = 20 }) {
+    const data = await this.graph.collection(`/sites?search=${encodeURIComponent(query)}`);
+    const items = data.items.slice(0, limit).map(site => ({
+      siteId: site.id, displayName: site.displayName, description: site.description, webUrl: site.webUrl,
+    }));
+    return { source: 'graph', query, items, truncated: data.items.length > limit || !!data.nextCursor,
+      coverage: 'SharePoint sites this account can access that match the query. Use the returned siteId with list_drive_items or upload_file.' };
+  }
+
+  async listDrives({ query, limit = 20 }) {
+    const data = await this.graph.request('/me/drives');
+    if (!Array.isArray(data?.value)) throw new McpOperationError('invalid_response', 'Microsoft Graph did not return a drives collection.');
+    const needle = (query || '').toLocaleLowerCase();
+    const matches = data.value.filter(drive => !needle ||
+      [drive.name, drive.description].some(text => (text || '').toLocaleLowerCase().includes(needle)));
+    return { source: 'graph', query: query || null,
+      items: matches.slice(0, limit).map(drive => ({ driveId: drive.id, name: drive.name, description: drive.description, url: drive.url, driveType: drive.driveType })),
+      truncated: matches.length > limit,
+      coverage: 'OneDrive and SharePoint site drives this account can access. Use the returned driveId with list_drive_items, download_file, or upload_file.' };
+  }
+
+  async listDriveItems({ driveId, folderPath = 'root', limit = 20, cursor }) {
+    const data = await this.graph.collection(driveChildrenEndpoint(driveId, folderPath, limit), { cursor });
+    return { source: 'graph', folder: (folderPath || 'root').replace(/^\//, ''),
+      items: data.items.map(item => ({
+        id: item.id, name: item.name, kind: item.folder ? 'folder' : 'file',
+        ...(item.file ? { size: item.file.size, mimeType: item.file.mimeType } : {}),
+        createdDateTime: item.createdDateTime, lastModifiedDateTime: item.lastModifiedDateTime, webUrl: item.webUrl,
+      })), ...(data.nextCursor ? { nextCursor: data.nextCursor } : {}) };
   }
 
   listChannels({ teamId, cursor }) {

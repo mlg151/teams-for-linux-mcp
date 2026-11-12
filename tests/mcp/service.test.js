@@ -112,3 +112,45 @@ test('send_message renders markdown as HTML, passes HTML through, and keeps text
   await service.sendMessage({ chatId: '19:chat@thread.v2', content: '<b>raw</b>', format: 'html' });
   assert.deepEqual(bodies[2], { contentType: 'html', content: '<b>raw</b>' });
 });
+
+test('site search queries the sites collection with the raw search term', async () => {
+  let endpoint;
+  const service = new Microsoft365Service({}, {
+    graph: { collection: async url => { endpoint = url; return { items: [{ id: 'site-1', displayName: 'Project A', description: 'Docs', webUrl: 'https://a.sharepoint.com/sites/ProjectA' }] }; } }, browser: {},
+  });
+  const result = await service.searchSites({ query: 'project a', limit: 5 });
+  assert.equal(endpoint, '/sites?search=project%20a');
+  assert.equal(result.items[0].siteId, 'site-1');
+  assert.equal(result.truncated, false);
+});
+
+test('drive listing filters OneDrive and SharePoint drives client-side', async () => {
+  const service = new Microsoft365Service({}, {
+    graph: { request: async () => ({ value: [
+      { id: 'drive-1', name: 'OneDrive - Contoso', description: null, url: 'https://contoso-my.sharepoint.com/personal/me', driveType: 'business' },
+      { id: 'drive-2', name: 'Project A', description: 'site', url: 'https://contoso.sharepoint.com/sites/ProjectA', driveType: 'business' },
+      { id: 'drive-3', name: 'Other', description: '', url: 'https://contoso.sharepoint.com/sites/Other', driveType: 'business' },
+    ] }) }, browser: {},
+  });
+  const result = await service.listDrives({ query: 'project' });
+  assert.deepEqual(result.items.map(item => item.driveId), ['drive-2']);
+  const all = await service.listDrives({});
+  assert.equal(all.items.length, 3);
+  assert.equal(all.items[0].name, 'OneDrive - Contoso');
+});
+
+test('drive folder listing addresses root and relative paths with the colon path syntax', async () => {
+  const endpoints = [];
+  const service = new Microsoft365Service({}, {
+    graph: { collection: async url => { endpoints.push(url); return { items: [{ id: 'item-1', name: 'Notes', folder: {} }, { id: 'item-2', name: 'Notes.txt', file: { size: 42, mimeType: 'text/plain' } }] }; } }, browser: {},
+  });
+  const result = await service.listDriveItems({ driveId: 'drive-1' });
+  assert.equal(endpoints[0], '/drives/drive-1/root/children?$top=20');
+  assert.equal(result.items[0].kind, 'folder');
+  assert.equal(result.items[1].kind, 'file');
+  assert.equal(result.items[1].size, 42);
+  await service.listDriveItems({ driveId: 'drive-1', folderPath: 'Reports/2026', limit: 5 });
+  assert.equal(endpoints[1], '/drives/drive-1/root:/Reports/2026:/children?$top=5');
+  await service.listDriveItems({ driveId: 'drive-1', folderPath: "O'Brien/2026 report", limit: 3 });
+  assert.equal(endpoints[2], "/drives/drive-1/root:/O'Brien/2026%20report:/children?$top=3");
+});
