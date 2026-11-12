@@ -94,3 +94,21 @@ test('calendar view sends an offset-bearing range and a calendar-specific cursor
   assert.equal(url.pathname, '/v1.0/me/calendars/cal%2F1/calendarView');
   assert.equal(url.searchParams.get('startDateTime'), '2026-10-29T09:00:00-04:00');
 });
+
+test('send_message renders markdown as HTML, passes HTML through, and keeps text plain', async () => {
+  const bodies = [];
+  const service = new Microsoft365Service({}, {
+    graph: { request: async (endpoint, options) => { bodies.push(options.body.body); return { id: 'created' }; } }, browser: {},
+  });
+  const plain = await service.sendMessage({ chatId: '19:chat@thread.v2', content: 'hello <team>' });
+  assert.deepEqual(bodies[0], { contentType: 'text', content: 'hello <team>' });
+  assert.equal(plain.format, 'text');
+  const markdown = await service.sendMessage({ chatId: '19:chat@thread.v2', content: '# Title\n\n- **bold**\n- `code`', format: 'markdown' });
+  assert.equal(markdown.format, 'html');
+  assert.equal(bodies[1].contentType, 'html');
+  assert.match(bodies[1].content, /<h1>Title<\/h1>/);
+  assert.match(bodies[1].content, /<strong>bold<\/strong>/);
+  assert.match(bodies[1].content, /<code>code<\/code>/);
+  await service.sendMessage({ chatId: '19:chat@thread.v2', content: '<b>raw</b>', format: 'html' });
+  assert.deepEqual(bodies[2], { contentType: 'html', content: '<b>raw</b>' });
+});

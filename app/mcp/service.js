@@ -1,11 +1,16 @@
 'use strict';
 
+const { marked } = require('marked');
 const { SessionGraph, canUseBrowser } = require('./graph');
 const { TeamsBrowser } = require('./browser');
 const { McpOperationError } = require('./errors');
 
 const id = encodeURIComponent;
 const literal = text => encodeURIComponent(text.replaceAll("'", "''"));
+
+function renderMarkdown(content) {
+  return marked.parse(content, { async: false });
+}
 
 class Microsoft365Service {
   constructor(runtime, { graph = new SessionGraph(runtime), browser = new TeamsBrowser(runtime) } = {}) {
@@ -103,12 +108,14 @@ class Microsoft365Service {
     return this.graph.collection(`${endpoint}?$top=${limit}`, { cursor });
   }
 
-  async sendMessage({ chatId, teamId, channelId, replyToId, content }) {
+  async sendMessage({ chatId, teamId, channelId, replyToId, content, format = 'text' }) {
     let endpoint = chatId ? `/chats/${id(chatId)}/messages` : `/teams/${id(teamId)}/channels/${id(channelId)}/messages`;
     if (replyToId) endpoint += `/${id(replyToId)}/replies`;
-    const data = await this.graph.request(endpoint, { method: 'POST', body: { body: { contentType: 'text', content } } });
+    const body = format === 'markdown' ? { contentType: 'html', content: renderMarkdown(content) } :
+      format === 'html' ? { contentType: 'html', content } : { contentType: 'text', content };
+    const data = await this.graph.request(endpoint, { method: 'POST', body: { body } });
     if (!data?.id) throw new McpOperationError('outcome_unknown', 'Microsoft did not return a message ID. Check Teams before retrying the send.');
-    return { source: 'graph', sent: true, message: data };
+    return { source: 'graph', sent: true, format: body.contentType, message: data };
   }
 
   listCalendarEvents({ startDateTime, endDateTime, calendarId, limit = 20, cursor }) {
@@ -127,4 +134,4 @@ class Microsoft365Service {
   }
 }
 
-module.exports = { Microsoft365Service };
+module.exports = { Microsoft365Service, renderMarkdown };

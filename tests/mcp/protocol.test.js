@@ -69,6 +69,20 @@ test('MCP input validation prevents ambiguous sends before executing them', asyn
   assert.equal(calls, 1);
 });
 
+test('MCP send_message only accepts text, markdown, or html formats', async t => {
+  let calls = 0;
+  const request = await connect(t, { sendMessage: async args => { calls++; return { sent: true, format: args.format }; } });
+  const listing = await request('tools/list');
+  const schema = listing.result.tools.find(tool => tool.name === 'send_message').inputSchema;
+  assert.deepEqual(schema.properties.format.enum, ['text', 'markdown', 'html']);
+  const invalid = await request('tools/call', { name: 'send_message', arguments: { chatId: 'a', content: 'hello', format: 'markdownish' } });
+  assert.ok(invalid.error || invalid.result?.isError);
+  assert.equal(calls, 0);
+  const sent = await request('tools/call', { name: 'send_message', arguments: { chatId: 'a', content: '**bold**', format: 'markdown' } });
+  assert.equal(sent.result.structuredContent.format, 'markdown');
+  assert.equal(calls, 1);
+});
+
 test('MCP validates date ranges and returns actionable permission errors', async t => {
   const request = await connect(t, { searchOneDrive: async () => { throw new McpOperationError('permission_denied', 'Denied'); } });
   const invalid = await request('tools/call', { name: 'list_calendar_events', arguments: { startDateTime: '2026-10-30T00:00:00Z', endDateTime: '2026-10-29T00:00:00Z' } });

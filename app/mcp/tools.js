@@ -67,8 +67,8 @@ function createServer(runtime, service = new Microsoft365Service(runtime)) {
     z.object({ teamId: identifier, cursor }), args => service.listChannels(args));
   tool('read_messages', 'Read messages from exactly one chat or Team/channel using the session Graph token. Follow nextCursor with the same arguments.',
     z.object({ ...targetFields, limit, cursor }).refine(validTarget, { message: 'Supply chatId OR both teamId and channelId.' }), args => service.readMessages(args));
-  tool('send_message', 'Send a plain-text message to exactly one known chat or Team/channel. replyToId replies to a channel thread. Do not retry uncertain outcomes.',
-    z.object({ ...targetFields, content: z.string().trim().min(1).max(28000), replyToId: identifier.optional() })
+  tool('send_message', 'Send a message to exactly one known chat or Team/channel. format: text (default), markdown, or html; markdown is rendered as HTML, which Teams sanitizes (no scripts or arbitrary styles). replyToId replies to a channel thread. Do not retry uncertain outcomes.',
+    z.object({ ...targetFields, content: z.string().trim().min(1).max(28000), format: z.enum(['text', 'markdown', 'html']).default('text'), replyToId: identifier.optional() })
       .refine(validTarget, { message: 'Supply chatId OR both teamId and channelId.' })
       .refine(value => !value.replyToId || !!value.channelId, { message: 'replyToId is supported for channel threads only.' }),
     args => service.sendMessage(args), false);
