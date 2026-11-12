@@ -32,11 +32,11 @@ This installs a root-owned, **non-setuid** copy of `unshare` at `/usr/local/libe
 Install and start the service **as the account that will own the Teams sign-in**:
 
 ```bash
-npm run mcp:install -- --data-dir "$HOME/.local/share/teams-mcp/profile" --login-port 8788
+npm run mcp:install -- --data-dir "$HOME/.local/share/teams-mcp/profile"
 systemctl --user status teams-mcp.service
 ```
 
-The installer writes `~/.config/systemd/user/teams-mcp.service` and a mode-0600 `~/.config/teams-mcp/service.env`, then enables and starts the unit. It uses absolute paths to this checkout and Node. Re-run the installer after moving either one. Existing `service.env` settings are preserved; edit that file to change an existing installation:
+The installer writes `~/.config/systemd/user/teams-mcp.service` and a mode-0600 `~/.config/teams-mcp/service.env`, then enables and starts the unit. It uses absolute paths to this checkout and Node. Re-run the installer after moving either one. Omit `--login-port` and the installer allocates a free loopback port, which avoids the common `8788` collision when several OS users run the service on one host; pass `--login-port 8788` only when you need a known port for tunneling. Existing `service.env` settings are preserved; edit that file to change an existing installation:
 
 ```ini
 TEAMS_MCP_USER_DATA_DIR="/home/you/.local/share/teams-mcp/profile"
@@ -76,6 +76,8 @@ Use your actual absolute Node and checkout paths; `~` does not expand in JSON. R
 Close/restart old Claude sessions after changing their configuration. Before starting the service against an existing profile, stop their old MCP launchers and their Electron/Xvfb descendants. Inspect `ps -u "$USER" -o pid,ppid,args` to identify processes for this checkout; do not stop unrelated Node or Electron applications. Old sessions retain the old configuration until restarted.
 
 A relay only forwards MCP bytes. It imports no browser code, never starts the service, and never reconnects or replays a request. If the service is unavailable, start it and reconnect the MCP client. Use the direct Node command in Claude, since npm prints a non-protocol banner to stdout.
+
+The relay is application-agnostic. Any stdio MCP client — not only Claude — can join the same shared service: point the client's MCP server configuration at the same `node /path/to/scripts/mcp.js` command and it connects to the same socket. All clients share one sign-in, one queue, and one service identity, so a second agent can keep using the service while another is idle or disconnected.
 
 ## Sign in through VS Code Remote Tunnels
 
@@ -120,7 +122,7 @@ Electron's inspector and remote-debugging ports bind **inside private network na
 
 `xdg-dbus-proxy` retains access to the owning user's existing Secret Service/KWallet keyring while hiding the systemd bus service. This prevents Chromium's desktop-portal integration from moving Electron outside the service cgroup, so a supervisor crash cannot leave it holding the profile lock. It does not switch cookie encryption to plaintext or replace the user's keyring. Re-run the scoped helper installer after updating `util-linux` to refresh its copy of `unshare`.
 
-Clients use a filesystem Unix socket, mode **0600**, in a mode-0700 user-owned runtime directory. The relay rejects unowned or group/world-accessible sockets. Other unprivileged OS users cannot connect to the MCP socket or reach the private debugging listeners through host TCP. Root and other processes running as the owning OS account remain trusted. This protects cross-user access; it is not a sandbox against the owner or administrator.
+Clients use a filesystem Unix socket, mode **0600**, in a mode-0700 user-owned runtime directory. The relay rejects unowned or group/world-accessible sockets. Other unprivileged OS users cannot connect to the MCP socket or reach the private debugging listeners through host TCP. `download_file` only writes into a directory whose final component is owned by the running OS user, creates the file mode 0600, and opens the destination without following links, so another local user cannot read a download or plant a file in its place. Root and other processes running as the owning OS account remain trusted. This protects cross-user access; it is not a sandbox against the owner or administrator.
 
 ## Tools
 
@@ -135,9 +137,14 @@ Clients use a filesystem Unix socket, mode **0600**, in a mode-0700 user-owned r
 | `search_teams` | Search joined Teams by name/description |
 | `search_onedrive` | Search the user's OneDrive files |
 | `list_onedrive_files` | List a OneDrive folder's metadata |
+| `search_sites` | Search accessible SharePoint sites by name or keyword |
+| `list_drives` | List OneDrive and SharePoint site drives and return their drive IDs |
+| `list_drive_items` | List a OneDrive or SharePoint drive folder by path |
+| `download_file` | Stream a OneDrive/SharePoint file to this user's disk and return its local path |
+| `upload_file` | Upload a local file to OneDrive or SharePoint, chunking files over 250 MB |
 | `list_channels` | List channels in a known Team |
 | `read_messages` | Read messages from a known chat or Team/channel |
-| `send_message` | Send plain text to a known chat or Team/channel; reply to a channel thread |
+| `send_message` | Send text, markdown (rendered to HTML), or HTML to a known chat or Team/channel; reply to a channel thread |
 | `list_calendar_events` | List events and recurring occurrences in a date range |
 | `create_calendar_event` | Create an event, optionally with attendees and a Teams meeting link |
 | `update_calendar_event` | Update an existing event |
@@ -149,6 +156,14 @@ To message a person by name, call `search_people`, select the intended account f
 Search tools accept `backend: "auto" | "graph" | "browser"`. `auto` attempts Graph and falls back to the signed-in UI only for permission errors or an unavailable Graph token. Network errors, throttling, expired login, and invalid input do not cause fallback.
 
 `search_messages` supports `offset` for Graph results. `search_onedrive` and list/read tools return an opaque `nextCursor` when more Graph results exist; pass it with the same query, target, and limit. Cursors are held in memory and expire on a full Teams navigation or server restart. Chat/Team name searches scan at most ten API pages and report `truncated` when appropriate.
+
+## OneDrive and SharePoint file transfers
+
+`search_sites` and `list_drives` return `siteId` and `driveId` values; use the `driveId` with `list_drive_items`, `download_file`, and `upload_file`. Paths are relative to the drive root (`root` is the top folder). The legacy `search_onedrive` and `list_onedrive_files` tools keep working against the user's default OneDrive.
+
+- `download_file` streams file content straight to disk, so multi-GB transfers never pass over the MCP transport. Files land in `~/.local/share/teams-mcp/downloads` (or an existing `destDir` you name), are created mode 0600 with a collision-free name, and the result contains only `{path, name, mimeType, size}`. Downloads larger than `TEAMS_MCP_MAX_DOWNLOAD_MB` in `service.env` (default 4096 MB) are refused with `file_too_large` and no partial file is kept.
+- `upload_file` reads a regular local file owned by the running OS user. Files up to 250 MB go over one `PUT`; larger files use an upload session in 10 MB chunks. An existing destination name is refused with `file_exists` unless you pass `overwrite: true`.
+- These transfers use the same session token as the other Graph tools and keep its existing permissions. An account that lacks the corresponding drive scopes (for example SharePoint `Sites.Read.All` or OneDrive `Files.Read.All`) gets `permission_denied` rather than a fallback.
 
 ## How session access works
 
