@@ -1,5 +1,9 @@
 'use strict';
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { Readable } = require('node:stream');
 const { marked } = require('marked');
 const { SessionGraph, canUseBrowser } = require('./graph');
 const { TeamsBrowser } = require('./browser');
@@ -25,6 +29,56 @@ function driveChildrenEndpoint(driveId, folderPath, limit) {
   const clean = (folderPath || 'root').replace(/^\//, '');
   const where = clean === 'root' ? 'root/children' : `root:/${drivePathKey(clean)}:/children`;
   return `/drives/${id(driveId)}/${where}?$top=${limit}`;
+}
+
+function driveContentEndpoint(driveId, filePath) {
+  const clean = (filePath || '').replace(/^\//, '');
+  if (!clean || clean === 'root') throw new McpOperationError('invalid_path', 'The path must identify a file below the drive root, not the root itself.');
+  return `/drives/${id(driveId)}/root:/${drivePathKey(clean)}:/content`;
+}
+
+function maxDownloadBytes() {
+  const configured = Number(process.env.TEAMS_MCP_MAX_DOWNLOAD_MB);
+  const megabytes = Number.isInteger(configured) && configured > 0 ? configured : 4096;
+  return megabytes * 1024 * 1024;
+}
+
+// The destination must be reachable without following a symlink, and the
+// directory we write into must be owned by this user, so another OS account
+// can neither read the download nor plant a file in its place. Higher-level
+// components may be root-owned (/, /tmp, /home, ...). The service runs under
+// umask 077, so created files are 0600 and owned by this user.
+function secureDownloadDirectory(directory) {
+  const resolved = path.resolve(directory);
+  const segments = resolved.split(path.sep).filter(Boolean);
+  let cursor = path.sep;
+  for (const [index, segment] of segments.entries()) {
+    cursor = path.join(cursor, segment);
+    const stat = fs.lstatSync(cursor);
+    if (stat.isSymbolicLink()) throw new McpOperationError('invalid_path', 'The destination path must not contain symlinks.');
+    if (!stat.isDirectory()) throw new McpOperationError('invalid_path', 'The destination directory does not exist.');
+    if (index === segments.length - 1 && stat.uid !== process.getuid()) {
+      throw new McpOperationError('invalid_path', 'The destination directory must be owned by this user.');
+    }
+  }
+  return resolved;
+}
+
+function defaultDownloadsDirectory() {
+  return path.join(os.homedir(), '.local', 'share', 'teams-mcp', 'downloads');
+}
+
+function uniqueDestination(directory, filePath) {
+  const raw = path.basename((filePath || '').replace(/\\/g, '/'));
+  const base = raw.replace(/[^\w.@+-]/g, '_').slice(0, 180) || 'download';
+  let destination = path.join(directory, base);
+  for (let index = 0; index < 100 && fs.existsSync(destination); index++) {
+    const dot = base.lastIndexOf('.');
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    const ext = dot > 0 ? base.slice(dot) : '';
+    destination = path.join(directory, `${stem}-${Date.now().toString(36)}${index ? `-${index}` : ''}${ext}`);
+  }
+  return destination;
 }
 
 class Microsoft365Service {
@@ -145,6 +199,63 @@ class Microsoft365Service {
       })), ...(data.nextCursor ? { nextCursor: data.nextCursor } : {}) };
   }
 
+  async downloadFile({ driveId, filePath, destDir }) {
+    const endpoint = driveContentEndpoint(driveId, filePath);
+    const response = await this.graph.requestStream(endpoint);
+    const releaseBody = () => { response.body?.cancel().catch(() => {}); };
+    let directory;
+    let fd;
+    try {
+      if (!response.body) throw new McpOperationError('invalid_response', 'Microsoft Graph returned no file content.');
+      directory = destDir ? path.resolve(destDir) : defaultDownloadsDirectory();
+      if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      directory = secureDownloadDirectory(directory);
+      const destination = uniqueDestination(directory, filePath);
+      const maxBytes = maxDownloadBytes();
+      // O_NOFOLLOW closes the race where another local user plants a symlink
+      // at the destination name in a shared directory before we open it.
+      fd = fs.openSync(destination, fs.constants.O_CREAT | fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
+      const writer = fs.createWriteStream(destination, { fd });
+      const stream = Readable.fromWeb(response.body, { signal: this.runtime.signal });
+      let bytes = 0;
+      let failed;
+      try {
+        for await (const chunk of stream) {
+          bytes += chunk.length;
+          if (bytes > maxBytes) {
+            failed = new McpOperationError('file_too_large', `The file exceeds the ${Math.floor(maxBytes / 1024 / 1024)} MB download limit. Set TEAMS_MCP_MAX_DOWNLOAD_MB in service.env to allow larger files.`);
+            break;
+          }
+          if (!writer.write(chunk)) await new Promise(resolve => writer.once('drain', resolve));
+        }
+        await new Promise((resolve, reject) => { writer.end(); writer.once('finish', resolve); writer.once('error', reject); });
+      } catch (error) {
+        failed = failed || error;
+      } finally {
+        stream.destroy();
+        writer.destroy();
+      }
+      if (failed) {
+        await fs.promises.unlink(destination).catch(() => {});
+        if (failed.name === 'AbortError' || this.runtime.signal?.aborted) throw new McpOperationError('cancelled', 'The download was cancelled before it finished. No file was kept.');
+        if (failed instanceof McpOperationError) throw failed;
+        throw new McpOperationError('download_failed', 'The file download failed; no partial file was kept. The remote file may still be available.');
+      }
+      return { source: 'graph', downloaded: true, path: destination, name: path.basename(destination),
+        mimeType: (response.headers.get('content-type') || 'application/octet-stream').split(';')[0], size: bytes };
+    } catch (error) {
+      releaseBody();
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch { /* the writer already closed the descriptor */ }
+      }
+      if (error instanceof McpOperationError) throw error;
+      if (error.code === 'ELOOP' || error.code === 'EACCES' || error.code === 'EEXIST') {
+        throw new McpOperationError('invalid_path', 'The destination file could not be created safely.');
+      }
+      throw new McpOperationError('download_failed', 'The file download failed; no partial file was kept. The remote file may still be available.');
+    }
+  }
+
   listChannels({ teamId, cursor }) {
     return this.graph.collection(`/teams/${id(teamId)}/channels?$select=id,displayName,description,membershipType,webUrl`, { cursor });
   }
@@ -180,4 +291,4 @@ class Microsoft365Service {
   }
 }
 
-module.exports = { Microsoft365Service, renderMarkdown };
+module.exports = { Microsoft365Service, renderMarkdown, driveContentEndpoint, secureDownloadDirectory, defaultDownloadsDirectory };

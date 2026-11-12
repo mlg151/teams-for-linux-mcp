@@ -81,6 +81,48 @@ class SessionGraph {
     return data;
   }
 
+  // Binary transfer variant: returns the parsed Response without consuming
+  // its body so the caller can stream it to or from disk. Graph-issued
+  // upload URLs carry their own credentials and never receive a token.
+  async requestStream(endpoint, { method = 'GET', url, headers, options = {} } = {}) {
+    const target = url || graphUrl(endpoint);
+    const parsed = new URL(target);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash) {
+      throw new McpOperationError('invalid_endpoint', 'Only HTTPS Microsoft Graph or Graph-issued upload URLs are allowed.');
+    }
+    await this.runtime.requireSession();
+    const client = await this.getTokenClient();
+    const tokenResult = await client.acquireToken();
+    if (!tokenResult?.success || !tokenResult.token) {
+      throw new McpOperationError('session_api_unavailable', 'The Teams session could not provide a Graph token. Sign in again and retry.');
+    }
+    if (this.runtime.signal?.aborted) throw new McpOperationError('cancelled', 'The operation was cancelled before sending the request.');
+    const requestHeaders = { ...headers };
+    if (!url) requestHeaders.Authorization = `Bearer ${tokenResult.token}`;
+    if (options.body !== undefined && !('Content-Type' in requestHeaders)) requestHeaders['Content-Type'] = options.contentType || 'application/json';
+    if (options.contentLength !== undefined && !('Content-Length' in requestHeaders)) requestHeaders['Content-Length'] = String(options.contentLength);
+    let response;
+    try {
+      // Transfers have no fixed 30 second ceiling; they honor the caller's
+      // cancellation signal instead.
+      response = await this.fetch(target, {
+        method, redirect: 'error', headers: requestHeaders,
+        ...(options.body === undefined ? {} : { body: options.body }),
+        ...(this.runtime.signal ? { signal: this.runtime.signal } : {}),
+      });
+    } catch {
+      if (this.runtime.signal?.aborted) throw new McpOperationError('cancelled', 'The transfer was cancelled.');
+      throw new McpOperationError(method === 'GET' ? 'request_failed' : 'outcome_unknown',
+        method === 'GET' ? 'The Microsoft Graph request failed or timed out.' :
+          'The request ended without a response. Check the drive before retrying; the write may have succeeded.');
+    }
+    if (response.status === 401) {
+      client.currentToken = null;
+      client.tokenExpiry = null;
+    }
+    return response;
+  }
+
   async collection(endpoint, { cursor, scope = endpoint } = {}) {
     if (cursor) {
       const entry = this.cursors.get(cursor);

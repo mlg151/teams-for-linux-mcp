@@ -2,6 +2,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { Microsoft365Service } = require('../../app/mcp/service');
 const { McpOperationError } = require('../../app/mcp/errors');
 
@@ -153,4 +156,44 @@ test('drive folder listing addresses root and relative paths with the colon path
   assert.equal(endpoints[1], '/drives/drive-1/root:/Reports/2026:/children?$top=5');
   await service.listDriveItems({ driveId: 'drive-1', folderPath: "O'Brien/2026 report", limit: 3 });
   assert.equal(endpoints[2], "/drives/drive-1/root:/O'Brien/2026%20report:/children?$top=3");
+  await assert.rejects(service.downloadFile({ driveId: 'drive-1', filePath: 'root' }), { code: 'invalid_path' });
+});
+
+test('download_file streams bytes to an owned directory and reports local metadata', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-download-'));
+  const bytes = Buffer.alloc(300 * 1024, 7);
+  const service = new Microsoft365Service({ signal: undefined }, {
+    graph: { requestStream: async endpoint => {
+      assert.equal(endpoint, '/drives/drive-1/root:/docs/file.txt:/content');
+      return new Response(bytes, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+    } }, browser: {},
+  });
+  const result = await service.downloadFile({ driveId: 'drive-1', filePath: 'docs/file.txt', destDir: path.join(dir, 'out') });
+  assert.equal(result.downloaded, true);
+  assert.equal(result.path, path.join(dir, 'out', 'file.txt'));
+  assert.ok(fs.readFileSync(result.path).equals(bytes));
+  assert.equal(result.mimeType, 'text/plain');
+  assert.equal(result.size, bytes.length);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('download_file refuses symlinked destinations and enforces the size cap', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-download2-'));
+  const real = path.join(dir, 'real');
+  fs.mkdirSync(real);
+  const link = path.join(dir, 'link');
+  fs.symlinkSync(real, link);
+  const service = new Microsoft365Service({ signal: undefined }, {
+    graph: { requestStream: async () => new Response(new Uint8Array(2 * 1024 * 1024)) }, browser: {},
+  });
+  await assert.rejects(service.downloadFile({ driveId: 'd', filePath: 'a.txt', destDir: link }), { code: 'invalid_path' });
+  const original = process.env.TEAMS_MCP_MAX_DOWNLOAD_MB;
+  process.env.TEAMS_MCP_MAX_DOWNLOAD_MB = '1';
+  try {
+    await assert.rejects(service.downloadFile({ driveId: 'd', filePath: 'a.txt', destDir: real }), { code: 'file_too_large' });
+    assert.equal(fs.readdirSync(real).length, 0);
+  } finally {
+    if (original === undefined) delete process.env.TEAMS_MCP_MAX_DOWNLOAD_MB; else process.env.TEAMS_MCP_MAX_DOWNLOAD_MB = original;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
 });
