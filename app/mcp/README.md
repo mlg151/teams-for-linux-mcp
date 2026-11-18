@@ -138,7 +138,7 @@ Clients use a filesystem Unix socket, mode **0600**, in a mode-0700 user-owned r
 | `search_onedrive` | Search the user's OneDrive files |
 | `list_onedrive_files` | List a OneDrive folder's metadata |
 | `search_sites` | Search accessible SharePoint sites by name or keyword |
-| `list_drives` | List OneDrive and SharePoint site drives and return their drive IDs |
+| `list_drives` | List the signed-in user’s drives or a SharePoint site’s document libraries by `siteId` |
 | `list_drive_items` | List a OneDrive or SharePoint drive folder by path |
 | `download_file` | Stream a OneDrive/SharePoint file to this user's disk and return its local path |
 | `upload_file` | Upload a local file to OneDrive or SharePoint, chunking files over 250 MB |
@@ -159,7 +159,13 @@ Search tools accept `backend: "auto" | "graph" | "browser"`. `auto` attempts Gra
 
 ## OneDrive and SharePoint file transfers
 
-`search_sites` and `list_drives` return `siteId` and `driveId` values; use the `driveId` with `list_drive_items`, `download_file`, and `upload_file`. Paths are relative to the drive root (`root` is the top folder). The legacy `search_onedrive` and `list_onedrive_files` tools keep working against the user's default OneDrive.
+To browse a SharePoint document library:
+
+1. Call `search_sites` with a site name and copy the matching result’s `siteId`.
+2. Call `list_drives` with that `siteId` and copy the `driveId` for the desired library (for example, Documents).
+3. Call `list_drive_items` with that `driveId` to browse the library. Use the same `driveId` and a drive-relative `filePath` with `download_file` or `upload_file`.
+
+Paths are relative to the drive root (`root` is the top folder). The legacy `search_onedrive` and `list_onedrive_files` tools keep working against the user's default OneDrive.
 
 - `download_file` streams file content straight to disk, so multi-GB transfers never pass over the MCP transport. Files land in `~/.local/share/teams-mcp/downloads` (or an existing `destDir` you name), are created mode 0600 with a collision-free name, and the result contains only `{path, name, mimeType, size}`. Downloads larger than `TEAMS_MCP_MAX_DOWNLOAD_MB` in `service.env` (default 4096 MB) are refused with `file_too_large` and no partial file is kept.
 - `upload_file` reads a regular local file owned by the running OS user. Files up to 250 MB go over one `PUT`; larger files use an upload session in 10 MB chunks. An existing destination name is refused with `file_exists` unless you pass `overwrite: true`.

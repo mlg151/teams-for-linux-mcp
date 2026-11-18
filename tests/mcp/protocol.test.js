@@ -3,6 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { InMemoryTransport } = require('@modelcontextprotocol/server');
+const { Microsoft365Service } = require('../../app/mcp/service');
 const { createServer } = require('../../app/mcp/tools');
 const { McpOperationError } = require('../../app/mcp/errors');
 
@@ -70,6 +71,21 @@ test('MCP input validation prevents ambiguous sends before executing them', asyn
   assert.equal(calls, 0);
   assert.equal((await request('tools/call', { name: 'send_message', arguments: { chatId: 'a', content: 'hello' } })).result.structuredContent.sent, true);
   assert.equal(calls, 1);
+});
+
+test('list_drives routes a SharePoint siteId to its Graph drive collection', async t => {
+  const siteId = 'contoso.sharepoint.com,collection-id,web-id';
+  const endpoints = [];
+  const service = new Microsoft365Service({}, {
+    graph: { request: async endpoint => {
+      endpoints.push(endpoint);
+      return { value: [{ id: 'library-id', name: 'Documents' }] };
+    } }, browser: {},
+  });
+  const request = await connect(t, service);
+  const { result } = await request('tools/call', { name: 'list_drives', arguments: { siteId } });
+  assert.deepEqual(endpoints, ['/sites/contoso.sharepoint.com%2Ccollection-id%2Cweb-id/drives']);
+  assert.equal(result.structuredContent.items[0].driveId, 'library-id');
 });
 
 test('MCP drive tools require a drive and file path before executing them', async t => {

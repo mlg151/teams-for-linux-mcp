@@ -63,10 +63,10 @@ function createServer(runtime, service = new Microsoft365Service(runtime)) {
   tool('search_onedrive', 'Search the signed-in user’s OneDrive. Auto uses Graph, then the embedded OneDrive search UI if permissions are missing. OneDrive must be pinned for browser fallback. Follow Graph nextCursor with the same query and limit.', search.extend({ cursor }), args => service.searchOneDrive(args));
   tool('list_onedrive_files', 'List a OneDrive folder using the Teams session Graph token. Follow nextCursor with the same arguments.',
     z.object({ folderId: identifier.default('root'), limit, cursor }), args => service.listOneDrive(args));
-  tool('search_sites', 'Search accessible SharePoint sites by name or keyword using the session Graph token. Returns siteIds and web URLs for browsing or uploading files.',
+  tool('search_sites', 'Search accessible SharePoint sites by name or keyword using the session Graph token. Pass a returned siteId to list_drives to find its document libraries.',
     search, args => service.searchSites(args));
-  tool('list_drives', 'List the user\'s OneDrive and accessible SharePoint site drives using the session Graph token. Returns driveIds for listing, downloading, or uploading files. Optional query filters drive names client-side.',
-    z.object({ query: z.string().trim().min(1).max(1000).optional(), limit }), args => service.listDrives(args));
+  tool('list_drives', 'List the signed-in user’s drives, or pass a siteId from search_sites to list that SharePoint site’s document libraries. Returns driveIds for listing, downloading, or uploading files. Optional query filters drive names and descriptions client-side.',
+    z.object({ siteId: identifier.optional(), query: query.optional(), limit }), args => service.listDrives(args));
   tool('list_drive_items', 'List a OneDrive or SharePoint drive folder using the session Graph token. folderPath is relative to the drive root (default: root). Follow nextCursor with the same arguments.',
     z.object({ driveId: identifier, folderPath: z.string().trim().min(1).max(1000).default('root'), limit, cursor }), args => service.listDriveItems(args));
   tool('download_file', 'Download a OneDrive or SharePoint file to this user\'s downloads directory (default ~/.local/share/teams-mcp/downloads) and return its local path, mime type, and size. Content streams to disk, so multi-GB files are limited only by Graph and disk space. Never returns file bytes over MCP.',

@@ -198,19 +198,20 @@ class Microsoft365Service {
       siteId: site.id, displayName: site.displayName, description: site.description, webUrl: site.webUrl,
     }));
     return { source: 'graph', query, items, truncated: data.items.length > limit || !!data.nextCursor,
-      coverage: 'SharePoint sites this account can access that match the query. Use the returned siteId with list_drive_items or upload_file.' };
+      coverage: 'SharePoint sites this account can access that match the query. Pass the returned siteId to list_drives to find document libraries.' };
   }
 
-  async listDrives({ query, limit = 20 }) {
-    const data = await this.graph.request('/me/drives');
+  async listDrives({ siteId, query, limit = 20 }) {
+    const endpoint = siteId ? `/sites/${id(siteId)}/drives` : '/me/drives';
+    const data = await this.graph.request(endpoint);
     if (!Array.isArray(data?.value)) throw new McpOperationError('invalid_response', 'Microsoft Graph did not return a drives collection.');
     const needle = (query || '').toLocaleLowerCase();
     const matches = data.value.filter(drive => !needle ||
       [drive.name, drive.description].some(text => (text || '').toLocaleLowerCase().includes(needle)));
     return { source: 'graph', query: query || null,
       items: matches.slice(0, limit).map(drive => ({ driveId: drive.id, name: drive.name, description: drive.description, url: drive.url, driveType: drive.driveType })),
-      truncated: matches.length > limit,
-      coverage: 'OneDrive and SharePoint site drives this account can access. Use the returned driveId with list_drive_items, download_file, or upload_file.' };
+      truncated: matches.length > limit || !!data['@odata.nextLink'],
+      coverage: 'Use the returned driveId with list_drive_items, download_file, or upload_file.' };
   }
 
   async listDriveItems({ driveId, folderPath = 'root', limit = 20, cursor }) {

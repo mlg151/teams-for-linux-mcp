@@ -127,13 +127,16 @@ test('site search queries the sites collection with the raw search term', async 
   assert.equal(result.truncated, false);
 });
 
-test('drive listing filters OneDrive and SharePoint drives client-side', async () => {
+test('drive listing filters the signed-in user’s drives client-side', async () => {
   const service = new Microsoft365Service({}, {
-    graph: { request: async () => ({ value: [
-      { id: 'drive-1', name: 'OneDrive - Contoso', description: null, url: 'https://contoso-my.sharepoint.com/personal/me', driveType: 'business' },
-      { id: 'drive-2', name: 'Project A', description: 'site', url: 'https://contoso.sharepoint.com/sites/ProjectA', driveType: 'business' },
-      { id: 'drive-3', name: 'Other', description: '', url: 'https://contoso.sharepoint.com/sites/Other', driveType: 'business' },
-    ] }) }, browser: {},
+    graph: { request: async endpoint => {
+      assert.equal(endpoint, '/me/drives');
+      return { value: [
+        { id: 'drive-1', name: 'OneDrive - Contoso', description: null, url: 'https://contoso-my.sharepoint.com/personal/me', driveType: 'business' },
+        { id: 'drive-2', name: 'Project A', description: 'site', url: 'https://contoso.sharepoint.com/sites/ProjectA', driveType: 'business' },
+        { id: 'drive-3', name: 'Other', description: '', url: 'https://contoso.sharepoint.com/sites/Other', driveType: 'business' },
+      ] };
+    } }, browser: {},
   });
   const result = await service.listDrives({ query: 'project' });
   assert.deepEqual(result.items.map(item => item.driveId), ['drive-2']);
