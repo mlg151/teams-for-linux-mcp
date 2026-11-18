@@ -82,16 +82,39 @@ async function readSurface(frame, limit, source, extra = {}) {
   };
 }
 
+// Teams embeds the thread ID in each rendered chat title. Read the title and
+// ID from the same element so a neighboring chat cannot become the target.
+async function visibleChats(page, query, limit) {
+  const titles = page.locator('[role="treeitem"] [id^="title-chat-list-item_"]:visible');
+  return titles.evaluateAll((nodes, { query, limit }) => {
+    const matches = new Map();
+    for (const node of nodes) {
+      const topic = node.innerText.trim();
+      if (!topic.toLocaleLowerCase().includes(query.toLocaleLowerCase())) continue;
+      const chatId = node.id.slice('title-chat-list-item_'.length);
+      if (/^19:[a-zA-Z0-9_-]+@(?:thread\.v2|unq\.gbl\.spaces)$/.test(chatId)) matches.set(chatId, { topic, chatId });
+    }
+    const items = [...matches.values()].sort((a, b) =>
+      Number(b.topic.toLocaleLowerCase() === query.toLocaleLowerCase()) - Number(a.topic.toLocaleLowerCase() === query.toLocaleLowerCase()));
+    return { items: items.slice(0, limit), truncated: items.length > limit };
+  }, { query, limit });
+}
+
 class TeamsBrowser {
   constructor(runtime) { this.runtime = runtime; }
 
   async search(category, query, limit = 20) {
     const page = await this.runtime.requireSession();
+    if (category === 'chats') {
+      const result = await visibleChats(page, query, limit);
+      if (result.items.length) return { source: 'teams_browser', category, query, ...result, coverage: 'Matching titles in the visible Teams chat list.' };
+    }
     const input = await firstVisible(searchInputs(page), 'the Teams global search box');
     await input.fill(query);
     await this.searchAction(page, query, () => input.press('Enter'));
     const label = CATEGORIES[category];
-    const tab = page.getByRole('tab', { name: label }).or(page.getByRole('button', { name: label }));
+    const namedTab = page.getByRole('tab', { name: label }).or(page.getByRole('button', { name: label }));
+    const tab = category === 'chats' ? namedTab.or(page.locator('[data-tid="groupchats-tab"]')) : namedTab;
     await tab.first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {
       throw new McpOperationError('ui_unavailable', `The ${category} search filter did not appear. This Teams layout or UI language needs updated selectors.`);
     });

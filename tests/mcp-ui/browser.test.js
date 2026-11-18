@@ -101,3 +101,17 @@ test('search completion rejects unrelated or untrusted responses', () => {
   assert.equal(isSearchResponse(response('https://substrate.office.com/search', 'other'), 'budget'), false);
   assert.equal(isSearchResponse(response('https://login.microsoftonline.com/search', 'budget'), 'budget'), false);
 });
+
+test('chat list discovery pairs matching visible titles with their own thread IDs', async () => {
+  await page.setContent(`<div role="treeitem">
+    <span id="title-chat-list-item_19:other@thread.v2">Other</span>
+    <span id="title-chat-list-item_19:archive@thread.v2">Engineering Archive</span>
+    <span id="title-chat-list-item_19:active@thread.v2">Engineering</span>
+    <span hidden id="title-chat-list-item_19:hidden@thread.v2">Engineering</span>
+    <span id="title-chat-list-item_19:channel@thread.tacv2">Engineering</span>
+  </div>`);
+  const browser = new TeamsBrowser({ requireSession: async () => page });
+  const result = await browser.search('chats', 'engineering', 1);
+  assert.deepEqual(result.items, [{ topic: 'Engineering', chatId: '19:active@thread.v2' }]);
+  assert.equal(result.truncated, true);
+});
