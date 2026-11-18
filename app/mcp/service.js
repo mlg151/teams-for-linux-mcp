@@ -230,6 +230,10 @@ class Microsoft365Service {
     let directory;
     let fd;
     try {
+      if (!response.ok) {
+        const code = { 401: 'login_required', 403: 'permission_denied', 404: 'not_found', 429: 'rate_limited' }[response.status] || 'graph_error';
+        throw new McpOperationError(code, `The download returned HTTP ${response.status}.`, { status: response.status });
+      }
       if (!response.body) throw new McpOperationError('invalid_response', 'Microsoft Graph returned no file content.');
       directory = destDir ? path.resolve(destDir) : defaultDownloadsDirectory();
       if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

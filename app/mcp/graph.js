@@ -90,15 +90,18 @@ class SessionGraph {
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash) {
       throw new McpOperationError('invalid_endpoint', 'Only HTTPS Microsoft Graph or Graph-issued upload URLs are allowed.');
     }
-    await this.runtime.requireSession();
-    const client = await this.getTokenClient();
-    const tokenResult = await client.acquireToken();
-    if (!tokenResult?.success || !tokenResult.token) {
-      throw new McpOperationError('session_api_unavailable', 'The Teams session could not provide a Graph token. Sign in again and retry.');
+    const requestHeaders = { ...headers };
+    let client;
+    if (!url) {
+      await this.runtime.requireSession();
+      client = await this.getTokenClient();
+      const tokenResult = await client.acquireToken();
+      if (!tokenResult?.success || !tokenResult.token) {
+        throw new McpOperationError('session_api_unavailable', 'The Teams session could not provide a Graph token. Sign in again and retry.');
+      }
+      requestHeaders.Authorization = `Bearer ${tokenResult.token}`;
     }
     if (this.runtime.signal?.aborted) throw new McpOperationError('cancelled', 'The operation was cancelled before sending the request.');
-    const requestHeaders = { ...headers };
-    if (!url) requestHeaders.Authorization = `Bearer ${tokenResult.token}`;
     if (options.body !== undefined && !('Content-Type' in requestHeaders)) requestHeaders['Content-Type'] = options.contentType || 'application/json';
     if (options.contentLength !== undefined && !('Content-Length' in requestHeaders)) requestHeaders['Content-Length'] = String(options.contentLength);
     let response;
@@ -106,8 +109,8 @@ class SessionGraph {
       // Transfers have no fixed 30 second ceiling; they honor the caller's
       // cancellation signal instead.
       response = await this.fetch(target, {
-        method, redirect: 'error', headers: requestHeaders,
-        ...(options.body === undefined ? {} : { body: options.body }),
+        method, redirect: method === 'GET' && !url ? 'manual' : 'error', headers: requestHeaders,
+        ...(options.body === undefined ? {} : { body: options.body, duplex: 'half' }),
         ...(this.runtime.signal ? { signal: this.runtime.signal } : {}),
       });
     } catch {
@@ -116,7 +119,14 @@ class SessionGraph {
         method === 'GET' ? 'The Microsoft Graph request failed or timed out.' :
           'The request ended without a response. Check the drive before retrying; the write may have succeeded.');
     }
-    if (response.status === 401) {
+    // Graph content endpoints redirect to a short-lived, preauthenticated URL.
+    if (method === 'GET' && !url && response.status === 302) {
+      await response.body?.cancel();
+      const location = response.headers.get('location');
+      if (!location || !URL.canParse(location)) throw new McpOperationError('invalid_response', 'Microsoft Graph returned an invalid download location.');
+      return this.requestStream(null, { url: location });
+    }
+    if (client && response.status === 401) {
       client.currentToken = null;
       client.tokenExpiry = null;
     }

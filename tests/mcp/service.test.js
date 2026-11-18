@@ -277,3 +277,13 @@ test('large uploads use a chunked upload session with byte ranges', async () => 
   await Promise.all(streams.map(body => new Promise(resolve => body.once('close', resolve))));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('download_file rejects HTTP errors before creating the destination', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-download-error-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const service = new Microsoft365Service({}, {
+    graph: { requestStream: async () => new Response('Access denied', { status: 403 }) },
+  });
+  await assert.rejects(service.downloadFile({ driveId: 'd', filePath: 'report.txt', destDir: dir }), { code: 'permission_denied' });
+  assert.deepEqual(fs.readdirSync(dir), []);
+});

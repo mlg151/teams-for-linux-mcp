@@ -79,3 +79,31 @@ test('invalid API collections are errors rather than false empty search results'
   const malformed = graphWith(async () => new Response('<html>not Graph data</html>', { status: 200 }));
   await assert.rejects(malformed.request('/me/chats'), { code: 'invalid_response' });
 });
+
+test('streamed PUT bodies work with Node Request for Graph and upload sessions', async () => {
+  const { Readable } = require('node:stream');
+  const graph = graphWith(async (url, options) => {
+    const request = new Request(url, options);
+    assert.equal(await request.text(), 'file bytes');
+    return Response.json({ id: 'uploaded' });
+  });
+  for (const url of [undefined, 'https://storage.example/upload']) {
+    await graph.requestStream('/me/drive/root:/file:/content', {
+      url, method: 'PUT', options: { body: Readable.from([Buffer.from('file bytes')]) },
+    });
+  }
+});
+
+test('download follows the Graph content redirect without forwarding credentials', async () => {
+  const location = 'https://storage.example/download';
+  const graph = graphWith(async (url, options) => {
+    if (url === location) {
+      assert.equal(options.headers.Authorization, undefined);
+      assert.equal(options.redirect, 'error');
+      return new Response('bytes');
+    }
+    assert.equal(options.redirect, 'manual');
+    return Response.redirect(location);
+  });
+  assert.equal(await (await graph.requestStream('/me/drive/root:/file:/content')).text(), 'bytes');
+});
