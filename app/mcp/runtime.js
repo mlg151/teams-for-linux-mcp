@@ -107,11 +107,26 @@ class TeamsRuntime {
   async status() {
     const page = await this.getPage();
     const onTeams = isTeamsUrl(page.url());
-    const authenticated = onTeams && await page.evaluate(sessionReady).catch(() => false);
+    const uiReady = onTeams && await page.evaluate(sessionReady).catch(() => false);
+    // Keep the sign-in controls responsive while Teams attempts silent auth.
+    // Cache only the boolean, in this document, so navigation resets the check.
+    const authenticated = uiReady && await page.evaluate(() => {
+      const key = Symbol.for('teams-for-linux-mcp.graphReadiness');
+      const previous = window[key];
+      if (!previous || Date.now() >= previous.retryAt) {
+        const probe = { ready: false, retryAt: Date.now() + 30000 };
+        window[key] = probe;
+        Promise.resolve().then(() => window.teamsForLinuxReactHandler?.acquireToken('https://graph.microsoft.com'))
+          .then(result => { probe.ready = !!(result?.success && result.token); })
+          .catch(() => {})
+          .finally(() => { probe.retryAt = Date.now() + (probe.ready ? 30000 : 5000); });
+      }
+      return window[key].ready;
+    }).catch(() => false);
     return {
-      authenticated, mode: this.mode,
+      authenticated, uiReady, mode: this.mode,
       ...(this.serviceId ? { serviceId: this.serviceId, servicePid: process.pid } : {}),
-      state: authenticated ? 'ready' : onTeams ? 'loading_or_login_required' : 'login_required',
+      state: authenticated ? 'ready' : uiReady ? 'awaiting_graph_authentication' : onTeams ? 'loading_or_login_required' : 'login_required',
       // Never return URLs: login redirect query strings may contain auth codes.
       origin: new URL(page.url()).origin,
       ...(authenticated ? {} : { action: 'Call the MCP login tool and open its private browser link to complete Microsoft sign-in and MFA.' }),

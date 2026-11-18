@@ -114,7 +114,7 @@ After editing `service.env`, restart the unit. After editing the unit, run `syst
 
 Use `session_status.serviceId` and `.servicePid` to confirm clients share the same service incarnation. These change on a full service restart. A persistent profile reuses Microsoft's saved session when still valid; Microsoft may require sign-in again. Keep the same OS account/keyring environment. Profile migration by copying encrypted cookies is not supported.
 
-`session_status.authenticated` checks Teams' visible UI readiness; it does not acquire a Graph token. A cached Teams shell can still appear ready while Microsoft requires fresh authentication (for example, silent sign-in error `AADSTS50058`). Verify a read/search operation as well before declaring live messaging acceptance complete. `session_api_unavailable` can also mean Teams' private token interface has changed. A successful signed-out startup test or UI readiness flag alone does not prove sends work for an account.
+`session_status.uiReady` reports Teams shell readiness. When the shell is ready, the service probes Graph sign-in in the background. The login portal stays available until Teams can obtain a Graph token. `awaiting_graph_authentication` means the probe is pending or unsuccessful. Complete Microsoft sign-in in the portal and check the intended Graph operation to verify its permissions.
 
 ## Security on a shared host
 

@@ -59,3 +59,26 @@ test('cancelling a queued operation prevents a delayed write', async () => {
   assert.equal(writes, 0);
   await runtime.close();
 });
+
+test('a cached Teams shell keeps login open until the Graph sign-in succeeds', async t => {
+  const { runInNewContext } = require('node:vm');
+  let signedIn = false;
+  const window = { teamsForLinuxReactHandler: {
+    _getTeams2CoreServices: () => ({ authenticationService: {} }),
+    acquireToken: async () => signedIn ? { success: true, token: 'fixture' } : { success: false },
+  } };
+  let now = 0;
+  const runtime = new TeamsRuntime({ loginOptions: { port: 0 } });
+  t.after(() => runtime.close());
+  runtime.getPage = async () => ({
+    url: () => 'https://teams.cloud.microsoft/',
+    evaluate: async fn => runInNewContext('(' + fn.toString() + ')()', { window, Date: { now: () => now } }),
+  });
+  assert.equal((await runtime.status()).state, 'awaiting_graph_authentication');
+  assert.ok((await runtime.beginLogin()).url);
+  signedIn = true;
+  now += 31000;
+  await runtime.status();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await runtime.loginPortal.snapshot()).state, 'complete');
+});
